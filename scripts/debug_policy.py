@@ -24,6 +24,8 @@ def main():
     parser.add_argument('--policy-path', type=str, required=True, help='Path to trained policy directory')
     parser.add_argument('--episode-index', type=int, default=0, help='Episode index to evaluate')
     parser.add_argument('--device', type=str, default='cpu')
+    parser.add_argument('--save', type=str, default=None, help='グラフを PNG に保存（指定時は表示しない）')
+    parser.add_argument('--quiet', action='store_true', help='フレームごとの予測値を表示しない')
     args = parser.parse_args()
 
     # Load the dataset
@@ -37,6 +39,7 @@ def main():
     policy = ACTPolicy.from_pretrained(args.policy_path)
     policy.to(args.device)
     policy.eval()
+    policy.reset()
 
     # Evaluate the policy
     errors = []
@@ -53,8 +56,9 @@ def main():
         with torch.no_grad():
             pred_action = policy.select_action(obs).squeeze(0)
 
-        print(f"\033[32m pred_action: {pred_action}\033[0m")
-        print(f"\033[31m gt_action: {gt_action}\033[0m")
+        if not args.quiet:
+            print(f"\033[32m pred_action: {pred_action}\033[0m")
+            print(f"\033[31m gt_action: {gt_action}\033[0m")
 
         error = torch.norm(pred_action - gt_action).item()
         errors.append(error)
@@ -77,7 +81,11 @@ def main():
     plt.title(f"GT vs Predicted Actions for Episode {args.episode_index}")
     plt.legend(loc='upper right')
     plt.tight_layout()
-    plt.show()
+    if args.save:
+        plt.savefig(args.save, dpi=120)
+        print(f'plot saved to {args.save}')
+    else:
+        plt.show()
 
 if __name__ == "__main__":
     main()

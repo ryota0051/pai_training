@@ -1,81 +1,226 @@
 #!/usr/bin/env python3
+"""学習した ACT 方策を ROS 2 ノードとして実行する.
+
+観測の組み立て（関節順・物体位置の有無）は変換設定（conversion_config）と共有し、学習時と一致させる。
+
+Usage:
+    pixi run infer --model-path <ckpt>                                       # 演習（お辞儀）互換
+    pixi run infer --config configs/pick/infer_objpos.yaml [--model-path <ckpt>]
+
+I/F:
+    sub  /joint_states, （物体位置を使う場合）/task/object_pose
+    pub  /crane_plus_arm_controller/joint_trajectory, /crane_plus_gripper_controller/joint_trajectory
+    pub  /policy/status (std_msgs/String, JSON: enabled, latency_ms, predicted, step)
+    srv  /policy/enable (std_srvs/SetBool), /policy/reset (std_srvs/Trigger)
+    rerun: 予測チャンク・実関節角・物体位置をストリーミング（rerun.enabled: true のとき）
+"""
+import argparse
+import json
+import time
+
+import numpy as np
 import rclpy
+import torch
+import yaml
+from builtin_interfaces.msg import Duration
+from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
+from std_msgs.msg import String
+from std_srvs.srv import SetBool, Trigger
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
-import torch
-import argparse
-import numpy as np
 
 from lerobot.common.policies.act.modeling_act import ACTPolicy
+from pai_training.conversion import ConversionSpec
+from pai_training.inference_utils import TemporalEnsembler, compose_observation
 
-ARM_JOINT_NAMES = ['crane_plus_joint1', 'crane_plus_joint2', 'crane_plus_joint4', 'crane_plus_joint3']
-GRIPPER_JOINT_NAME = 'crane_plus_joint_hand'
+DEFAULTS = {
+    'device': 'cpu',
+    'rate': 20.0,
+    'trajectory_time': 0.1,
+    'start_enabled': True,
+    'temporal_ensemble_coeff': None,     # None: 毎ステップのチャンク先頭を実行（演習と同じ）
+    'conversion_config': 'configs/conversion_config.yaml',
+    'topics': {
+        'arm_command': '/crane_plus_arm_controller/joint_trajectory',
+        'gripper_command': '/crane_plus_gripper_controller/joint_trajectory',
+    },
+    'rerun': {'enabled': False, 'web_port': 9877, 'grpc_port': 9876, 'app_id': 'crane_plus_policy'},
+}
+
+
+def load_config(path):
+    cfg = dict(DEFAULTS)
+    if path:
+        with open(path) as f:
+            user = yaml.safe_load(f) or {}
+        for k, v in user.items():
+            cfg[k] = {**cfg[k], **v} if isinstance(cfg.get(k), dict) and isinstance(v, dict) else v
+    return cfg
+
+
+def make_trajectory(names, positions, seconds):
+    jt = JointTrajectory()
+    jt.joint_names = list(names)
+    pt = JointTrajectoryPoint()
+    pt.positions = [float(p) for p in positions]
+    pt.time_from_start = Duration(sec=int(seconds), nanosec=int((seconds % 1) * 1e9))
+    jt.points.append(pt)
+    return jt
+
 
 class InferenceNode(Node):
-    def __init__(self, model_path):
+    def __init__(self, cfg, model_path):
         super().__init__('crane_plus_act_infer')
-        self.arm_pub = self.create_publisher(JointTrajectory, '/crane_plus_arm_controller/joint_trajectory', 10)
-        self.gripper_pub = self.create_publisher(JointTrajectory, '/crane_plus_gripper_controller/joint_trajectory', 10)
-        self.subscription = self.create_subscription(JointState, '/joint_states', self.joint_state_callback, 10)
+        with open(cfg['conversion_config']) as f:
+            self.spec = ConversionSpec.from_dict(yaml.safe_load(f))
+        self.device = torch.device(cfg['device'])
+        self.traj_time = cfg['trajectory_time']
+        self.enabled = bool(cfg['start_enabled'])
+
         self.policy = ACTPolicy.from_pretrained(model_path)
         self.policy.eval()
-        self.device = torch.device('cpu')
         self.policy.to(self.device)
-        self.last_action = np.zeros(5, dtype=np.float32)
-        self.timer = self.create_timer(0.05, self.publish_action)  # 20Hz
-        self.latest_joint_state = None
+        coeff = cfg['temporal_ensemble_coeff']
+        self.ensembler = TemporalEnsembler(coeff, self.policy.config.chunk_size) if coeff is not None else None
 
-    def joint_state_callback(self, msg):
-        # Extract joint positions in the order of ARM_JOINT_NAMES + [GRIPPER_JOINT_NAME]
-        name_to_pos = dict(zip(msg.name, msg.position))
-        arm_pos = [name_to_pos.get(j, 0.0) for j in ARM_JOINT_NAMES]
-        gripper_pos = name_to_pos.get(GRIPPER_JOINT_NAME, 0.0)
-        self.latest_joint_state = np.array(arm_pos + [gripper_pos], dtype=np.float32)
+        topics = {**DEFAULTS['topics'], **self.spec.topics, **cfg['topics']}
+        self.arm_pub = self.create_publisher(JointTrajectory, topics['arm_command'], 10)
+        self.gripper_pub = self.create_publisher(JointTrajectory, topics['gripper_command'], 10)
+        self.status_pub = self.create_publisher(String, '/policy/status', 10)
+        self.create_subscription(JointState, topics['joint_states'], self.on_joint_state, 10)
+        if self.spec.needs_object:
+            self.create_subscription(PoseStamped, topics['object_pose'], self.on_object, 10)
+        self.create_service(SetBool, '/policy/enable', self.on_enable)
+        self.create_service(Trigger, '/policy/reset', self.on_reset)
 
-    def publish_action(self):
-        if self.latest_joint_state is None:
+        self.joints = {}
+        self.object_xyz = None
+        self.step = 0
+        self.last_latency_ms = None
+        self.last_pred = None
+
+        self.rr = None
+        if cfg['rerun']['enabled']:
+            import rerun as rr
+            rr.init(cfg['rerun']['app_id'], spawn=False)
+            rr.serve_web(open_browser=False, web_port=cfg['rerun']['web_port'],
+                         grpc_port=cfg['rerun']['grpc_port'])
+            self.rr = rr
+            self.get_logger().info(
+                f"rerun viewer: http://localhost:{cfg['rerun']['web_port']}"
+                f"/?url=rerun%2Bhttp://localhost:{cfg['rerun']['grpc_port']}/proxy")
+
+        self.create_timer(1.0 / cfg['rate'], self.on_timer)
+        self.get_logger().info(f'policy loaded from {model_path} on {self.device} (enabled={self.enabled})')
+
+    # ---- callbacks ----
+    def on_joint_state(self, msg):
+        self.joints.update(zip(msg.name, msg.position))
+
+    def on_object(self, msg):
+        p = msg.pose.position
+        self.object_xyz = (p.x, p.y, p.z)
+
+    def reset_policy(self):
+        self.policy.reset()
+        if self.ensembler is not None:
+            self.ensembler.reset()
+        self.step = 0
+
+    def on_enable(self, req, res):
+        if req.data and not self.enabled:
+            self.reset_policy()
+        self.enabled = bool(req.data)
+        res.success, res.message = True, f'enabled={self.enabled}'
+        return res
+
+    def on_reset(self, _req, res):
+        self.reset_policy()
+        res.success, res.message = True, 'reset'
+        return res
+
+    @torch.no_grad()
+    def predict_chunk(self, obs):
+        batch = {k: torch.from_numpy(v).unsqueeze(0).to(self.device) for k, v in obs.items()}
+        batch = self.policy.normalize_inputs(batch)
+        chunk = self.policy.model(batch)[0]
+        chunk = self.policy.unnormalize_outputs({'action': chunk})['action']
+        return chunk[0].cpu().numpy()  # (chunk_size, action_dim)
+
+    def on_timer(self):
+        obs = compose_observation(self.spec, self.joints, self.object_xyz)
+        if obs is None or not self.enabled:
+            self.publish_status()
             return
-        # Prepare observation dict for ACTPolicy
-        obs = {
-            'observation.state': torch.tensor(self.latest_joint_state, dtype=torch.float32).unsqueeze(0),  # (1, 5)
-            'observation.environment_state': torch.tensor(self.latest_joint_state, dtype=torch.float32).unsqueeze(0),  # (1, 5)
-        }
-        with torch.no_grad():
-            action = self.policy.select_action(obs).cpu().numpy().flatten()  # (5,)
-        self.last_action = action
-        # Publish to arm and gripper
-        jt = JointTrajectory()
-        jt.joint_names = ARM_JOINT_NAMES
-        pt = JointTrajectoryPoint()
-        pt.positions = action[:4].tolist()
-        pt.time_from_start.sec = 0
-        pt.time_from_start.nanosec = int(0.1 * 1e9)
-        jt.points.append(pt)
-        self.arm_pub.publish(jt)
-        jt_g = JointTrajectory()
-        jt_g.joint_names = [GRIPPER_JOINT_NAME]
-        pt_g = JointTrajectoryPoint()
-        pt_g.positions = [float(action[4])]
-        pt_g.time_from_start.sec = 0
-        pt_g.time_from_start.nanosec = int(0.1 * 1e9)
-        jt_g.points.append(pt_g)
-        self.gripper_pub.publish(jt_g)
-        print("action:", action[:4], "gripper:", action[4])
+        t0 = time.perf_counter()
+        chunk = self.predict_chunk(obs)
+        if self.device.type == 'cuda':
+            torch.cuda.synchronize()
+        self.last_latency_ms = (time.perf_counter() - t0) * 1000.0
+        action = self.ensembler.update(chunk) if self.ensembler is not None else chunk[0]
+        self.last_pred = action
+
+        self.arm_pub.publish(make_trajectory(self.spec.arm_joints, action[:-1], self.traj_time))
+        self.gripper_pub.publish(make_trajectory([self.spec.gripper_joint], action[-1:], self.traj_time))
+        self.log_rerun(obs, chunk, action)
+        self.step += 1
+        self.publish_status()
+
+    def publish_status(self):
+        self.status_pub.publish(String(data=json.dumps({
+            'enabled': self.enabled,
+            'ready': compose_observation(self.spec, self.joints, self.object_xyz) is not None,
+            'step': self.step,
+            'latency_ms': None if self.last_latency_ms is None else round(self.last_latency_ms, 2),
+            'predicted': None if self.last_pred is None else [round(float(v), 4) for v in self.last_pred],
+            'device': str(self.device),
+        })))
+
+    def log_rerun(self, obs, chunk, action):
+        if self.rr is None:
+            return
+        rr = self.rr
+        rr.set_time('step', sequence=self.step)
+        names = self.spec.joint_order
+        current = [self.joints[n] for n in names]
+        for i, n in enumerate(names):
+            short = n.replace('crane_plus_', '')
+            rr.log(f'joints/{short}/actual', rr.Scalars(current[i]))
+            rr.log(f'joints/{short}/command', rr.Scalars(float(action[i])))
+            # 予測チャンク（未来 chunk_size ステップ）を折れ線で表示
+            pts = np.stack([np.arange(len(chunk)), chunk[:, i]], axis=1)
+            rr.log(f'chunk/{short}', rr.LineStrips2D([pts]))
+        if self.object_xyz is not None:
+            rr.log('object/xyz', rr.Points3D([self.object_xyz], radii=0.02))
+            for axis, v in zip('xyz', self.object_xyz):
+                rr.log(f'object/{axis}', rr.Scalars(v))
+        rr.log('latency_ms', rr.Scalars(self.last_latency_ms))
+
 
 def main():
     parser = argparse.ArgumentParser(description='ACTPolicy inference node for CRANE+ V2 (ROS2)')
-    parser.add_argument('--model-path', type=str, required=True, help='Path to trained ACTPolicy model directory')
+    parser.add_argument('--config', default=None, help='推論設定 YAML（省略時は演習と同じ既定値）')
+    parser.add_argument('--model-path', default=None, help='学習済み方策ディレクトリ（設定の model_path を上書き）')
+    parser.add_argument('--device', default=None)
     args = parser.parse_args()
+    cfg = load_config(args.config)
+    if args.device:
+        cfg['device'] = args.device
+    model_path = args.model_path or cfg.get('model_path')
+    if not model_path:
+        parser.error('--model-path か設定の model_path が必要です')
+
     rclpy.init()
-    node = InferenceNode(args.model_path)
+    node = InferenceNode(cfg, model_path)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
+
 
 if __name__ == '__main__':
     main()

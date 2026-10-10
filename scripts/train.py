@@ -18,20 +18,27 @@
 """
 Train ACT (Action Chunking with Transformer) policy on the collected dataset.
 
-This script trains an ACT policy using configuration parameters specified in:
-    - configs/train_config.yaml: Training hyperparameters like batch size, learning rate, etc.
-    - configs/crane_features.py: Dataset and feature configuration
-
 Usage:
-    pixi run train
+    pixi run train                                         # configs/train_config.yaml（演習）
+    pixi run train --config configs/pick/train_objpos.yaml # 把持・配置タスク
+    pixi run train --config ... --device cpu               # CPU/GPU 比較用に上書き
 
+追加した設定項目（省略時は演習と同じ挙動）:
+    wandb_mode: online | offline | disabled
+    seed: int
+    episodes: [0, 1, ...]  学習に使うエピソード（null なら全て）
+    act: {...}             ACTConfig への追加引数（dim_model, n_encoder_layers, kl_weight など）
+学習時間などは <output_directory>/train_info.json に保存する。
 """
 
-
-from pathlib import Path
+import argparse
 import importlib.util
-import wandb
+import json
+import time
+from pathlib import Path
+
 import torch
+import wandb
 import yaml
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 from lerobot.common.datasets.utils import dataset_to_policy_features
@@ -39,107 +46,119 @@ from lerobot.common.policies.act.configuration_act import ACTConfig
 from lerobot.common.policies.act.modeling_act import ACTPolicy
 from lerobot.configs.types import FeatureType
 
+
 def load_config_py(config_path: Path):
     spec = importlib.util.spec_from_file_location("crane_features", config_path)
     config = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(config)
     return config
 
-def load_train_config(yaml_path: Path):
-    with open(yaml_path, 'r') as f:
-        return yaml.safe_load(f)
-
-# =====================
-# Load parameters from YAML
-# =====================
-train_cfg = load_train_config("configs/train_config.yaml")
-DATASET_ROOT = Path(train_cfg["dataset_root"])
-REPO_ID = train_cfg["repo_id"]
-OUTPUT_DIRECTORY = Path(train_cfg["output_directory"])
-CONFIG_PATH = Path(train_cfg["config_path"])
-DEVICE = torch.device(train_cfg["device"])
-TRAINING_STEPS = train_cfg["training_steps"]
-LOG_FREQ = train_cfg["log_freq"]
-NUM_WORKERS = train_cfg["num_workers"]
-BATCH_SIZE = train_cfg["batch_size"]
-CHUNK_SIZE = train_cfg["chunk_size"]
-N_ACTION_STEPS = train_cfg["n_action_steps"]
-LEARNING_RATE = train_cfg["learning_rate"]
-DELTA_TIMESTAMPS = train_cfg["delta_timestamps"]
-# =====================
 
 def main():
-    # Create a directory to store the training checkpoint.
-    OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', default='configs/train_config.yaml')
+    parser.add_argument('--device', default=None, help='設定ファイルの device を上書き')
+    parser.add_argument('--steps', type=int, default=None, help='設定ファイルの training_steps を上書き')
+    parser.add_argument('--output', default=None, help='設定ファイルの output_directory を上書き')
+    args = parser.parse_args()
 
-    config = load_config_py(CONFIG_PATH)
-    features = config.features
+    with open(args.config, 'r') as f:
+        cfg = yaml.safe_load(f)
+    dataset_root = Path(cfg["dataset_root"])
+    repo_id = cfg["repo_id"]
+    output_directory = Path(args.output or cfg["output_directory"])
+    device = torch.device(args.device or cfg["device"])
+    training_steps = args.steps or cfg["training_steps"]
+    log_freq = cfg["log_freq"]
+    episodes = cfg.get("episodes")
+    if cfg.get("seed") is not None:
+        torch.manual_seed(cfg["seed"])
 
-    wandb.init(project="pai_crane_gazebo", config={
-        "repo_id": REPO_ID,
-        "dataset_root": DATASET_ROOT,
-        "training_steps": TRAINING_STEPS,
-        "batch_size": BATCH_SIZE,
-        "chunk_size": CHUNK_SIZE,
-        "n_action_steps": N_ACTION_STEPS,
-        "device": str(DEVICE),
-    })
+    output_directory.mkdir(parents=True, exist_ok=True)
+    features = load_config_py(Path(cfg["config_path"])).features
 
-    dataset_metadata = LeRobotDatasetMetadata(REPO_ID, root=DATASET_ROOT)
+    run = wandb.init(project=cfg.get("wandb_project", "pai_crane_gazebo"),
+                     mode=cfg.get("wandb_mode", "online"),
+                     config={**cfg, "device": str(device), "training_steps": training_steps})
+
+    dataset_metadata = LeRobotDatasetMetadata(repo_id, root=dataset_root)
     features = dataset_to_policy_features(features)
     output_features = {key: ft for key, ft in features.items() if ft.type is FeatureType.ACTION}
     input_features = {key: ft for key, ft in features.items() if key not in output_features}
     print(f"input_features: {input_features}")
     print(f"output_features: {output_features}")
 
-    cfg = ACTConfig(
+    policy_cfg = ACTConfig(
         input_features=input_features,
         output_features=output_features,
-        chunk_size=CHUNK_SIZE,
-        n_action_steps=N_ACTION_STEPS
+        chunk_size=cfg["chunk_size"],
+        n_action_steps=cfg["n_action_steps"],
+        **(cfg.get("act") or {}),
     )
-    policy = ACTPolicy(cfg, dataset_stats=dataset_metadata.stats)
+    policy = ACTPolicy(policy_cfg, dataset_stats=dataset_metadata.stats)
     policy.train()
-    policy.to(DEVICE)
+    policy.to(device)
 
-    # Instantiate the dataset
-    dataset = LeRobotDataset(REPO_ID, root=DATASET_ROOT, delta_timestamps=DELTA_TIMESTAMPS)
+    dataset = LeRobotDataset(repo_id, root=dataset_root, episodes=episodes,
+                             delta_timestamps=cfg["delta_timestamps"])
+    print(f"dataset: {dataset.num_episodes} episodes, {len(dataset)} frames")
 
-    optimizer = torch.optim.Adam(policy.parameters(), lr=LEARNING_RATE)
+    optimizer = torch.optim.AdamW(policy.parameters(), lr=cfg["learning_rate"],
+                                  weight_decay=cfg.get("weight_decay", 0.0))
     dataloader = torch.utils.data.DataLoader(
         dataset,
-        num_workers=NUM_WORKERS,
-        batch_size=BATCH_SIZE,
+        num_workers=cfg["num_workers"],
+        batch_size=cfg["batch_size"],
         shuffle=True,
-        pin_memory=False,
+        pin_memory=device.type == "cuda",
         drop_last=True,
     )
 
     step = 0
     done = False
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    t_start = time.perf_counter()
     while not done:
         for batch in dataloader:
-            batch = {k: (v.to(DEVICE) if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
+            batch = {k: (v.to(device, non_blocking=True) if isinstance(v, torch.Tensor) else v)
+                     for k, v in batch.items()}
             # Remove the sequence_length dimension to adapt to the ACT model implementation
             batch["observation.state"] = batch["observation.state"][:, -1, :]  # (B, D)
             batch["observation.environment_state"] = batch["observation.environment_state"][:, -1, :]  # (B, D)
-            # action is left as is
-            loss, _ = policy.forward(batch)
+            loss, loss_dict = policy.forward(batch)
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
 
-            if step % LOG_FREQ == 0:
-                print(f"step: {step} loss: {loss.item():.3f}")
-                wandb.log({"loss": loss.item(), "step": step})
+            if step % log_freq == 0:
+                print(f"step: {step} loss: {loss.item():.4f}")
+                wandb.log({"loss": loss.item(), **{k: v for k, v in loss_dict.items()}, "step": step})
             step += 1
-            if step >= TRAINING_STEPS:
+            if step >= training_steps:
                 done = True
                 break
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    elapsed = time.perf_counter() - t_start
 
-    policy.save_pretrained(OUTPUT_DIRECTORY)
-    print(f"policy saved to {OUTPUT_DIRECTORY}")
-    wandb.finish()
+    policy.save_pretrained(output_directory)
+    info = {
+        "config": args.config,
+        "device": str(device),
+        "gpu": torch.cuda.get_device_name(0) if device.type == "cuda" else None,
+        "training_steps": training_steps,
+        "batch_size": cfg["batch_size"],
+        "train_seconds": elapsed,
+        "sec_per_step": elapsed / max(training_steps, 1),
+        "final_loss": loss.item(),
+        "num_episodes": dataset.num_episodes,
+        "num_frames": len(dataset),
+    }
+    (output_directory / "train_info.json").write_text(json.dumps(info, indent=2))
+    print(f"policy saved to {output_directory} ({elapsed:.1f}s, {info['sec_per_step'] * 1000:.1f} ms/step)")
+    run.finish()
+
 
 if __name__ == "__main__":
     main()

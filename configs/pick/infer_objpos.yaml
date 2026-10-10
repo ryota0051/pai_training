@@ -1,0 +1,14 @@
+# 把持・配置タスク (objpos) の推論設定
+model_path: "/home/ubuntu/checkpoints/train/crane_plus_pick_objpos_act"
+conversion_config: "configs/pick/conversion_objpos.yaml"   # 観測の組み立て規則を学習データと共有
+device: "cuda"
+rate: 20.0
+trajectory_time: 0.1
+start_enabled: false            # ブラウザ UI / 評価スクリプトから /policy/enable で開始
+temporal_ensemble_coeff: null   # 例: 0.01 で ACT の temporal ensembling を有効化
+
+rerun:
+  enabled: true
+  web_port: 9877                # rosbridge が 9090 を使うため演習の 9090 から変更
+  grpc_port: 9876
+  app_id: "crane_plus_pick_objpos"
