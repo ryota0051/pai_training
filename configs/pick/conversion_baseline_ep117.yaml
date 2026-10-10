@@ -1,0 +1,24 @@
+# 把持・配置タスク (baseline) 117 エピソード版（データ量の効果検証用）
+bag_dir: "/home/ubuntu/dataset/rosbags/pick_place"
+output_dir: "/home/ubuntu/dataset/lerobot_dataset/crane_plus_pick_baseline_ep117"
+config: "configs/pick/features_baseline.py"
+target_freq: 20
+pad_to_longest: true
+
+# 学習・推論で共通の関節順（名前で並べ替える）。最後がグリッパ
+joint_order:
+  - crane_plus_joint1
+  - crane_plus_joint2
+  - crane_plus_joint3
+  - crane_plus_joint4
+  - crane_plus_joint_hand
+
+topics:
+  joint_states: /joint_states
+  arm_command: /crane_plus_arm_controller/joint_trajectory
+  gripper_command: /crane_plus_gripper_controller/joint_trajectory
+  object_pose: /task/object_pose
+
+observation:
+  state: [joints]
+  environment_state: [joints]
