@@ -219,6 +219,8 @@ def main():
     parser.add_argument('--config', default=None, help='推論設定 YAML（省略時は演習と同じ既定値）')
     parser.add_argument('--model-path', default=None, help='学習済み方策ディレクトリ（設定の model_path を上書き）')
     parser.add_argument('--device', default=None)
+    parser.add_argument('--temporal-ensemble', type=float, default=None,
+                        help='temporal ensembling の係数（例: 0.01）。設定ファイルの値を上書き')
     parser.add_argument('--object-noise', type=float, default=None, help='物体位置ノイズ標準偏差 [m]')
     parser.add_argument('--object-bias', type=float, default=None, help='試行ごとの物体位置オフセット標準偏差 [m]')
     parser.add_argument('--object-delay', type=int, default=None, help='物体位置の遅延 [制御ステップ]')
@@ -226,6 +228,8 @@ def main():
     cfg = load_config(args.config)
     if args.device:
         cfg['device'] = args.device
+    if args.temporal_ensemble is not None:
+        cfg['temporal_ensemble_coeff'] = args.temporal_ensemble
     if args.object_noise is not None:
         cfg['object_corruption']['noise_std'] = args.object_noise
     if args.object_bias is not None:
