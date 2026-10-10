@@ -10,6 +10,7 @@ Usage:
 """
 import argparse
 import importlib.util
+import re
 import shutil
 from pathlib import Path
 
@@ -27,6 +28,11 @@ def load_config_py(config_path):
     config = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(config)
     return config
+
+
+def natural_key(path: Path):
+    """ep2 < ep10 となるよう数字部分を数値として比較する."""
+    return [int(t) if t.isdigit() else t for t in re.split(r'(\d+)', str(path))]
 
 
 def read_messages(episode_dir: Path, spec: ConversionSpec):
@@ -64,7 +70,8 @@ def main():
     output_dir = Path(conv_cfg['output_dir']).expanduser().resolve()
 
     episode_dirs = sorted({p.parent for p in bag_dir.rglob('*.db3')
-                           if not any(part.startswith('_') for part in p.relative_to(bag_dir).parts)})
+                           if not any(part.startswith('_') for part in p.relative_to(bag_dir).parts)},
+                          key=natural_key)
     if not episode_dirs:
         raise FileNotFoundError(f'No rosbag2 episode directories found in {bag_dir}')
     print(f'Found {len(episode_dirs)} episodes in {bag_dir}')
