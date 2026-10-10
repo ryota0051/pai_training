@@ -7,6 +7,13 @@ trajectory_time: 0.1
 start_enabled: false            # ブラウザ UI / 評価スクリプトから /policy/enable で開始
 temporal_ensemble_coeff: null   # 例: 0.01 で ACT の temporal ensembling を有効化
 
+# 物体位置の観測劣化（頑健性評価用。--object-noise / --object-delay で上書き可）
+object_corruption:
+  noise_std: 0.0                # 毎ステップ独立なノイズ [m]
+  bias_std: 0.0                 # 試行ごとに一定のオフセット [m]（キャリブレーション誤差）
+  delay_steps: 0                # 制御ステップ（20Hz なので 1 = 50ms）
+  seed: null
+
 rerun:
   enabled: true
   web_port: 9877                # rosbridge が 9090 を使うため演習の 9090 から変更

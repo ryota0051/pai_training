@@ -60,3 +60,50 @@ def test_temporal_ensembler_reset():
     te.update(np.array([[0.0], [10.0]]))
     te.reset()
     assert te.update(np.array([[5.0], [6.0]])).tolist() == [5.0]
+
+
+# ---- 物体位置の観測劣化（ノイズ・遅延）----
+from pai_training.inference_utils import ObservationCorruptor  # noqa: E402
+
+
+def test_corruptor_identity_when_disabled():
+    c = ObservationCorruptor(noise_std=0.0, delay_steps=0, seed=0)
+    assert c.apply((0.1, 0.2, 0.3)) == pytest.approx((0.1, 0.2, 0.3))
+
+
+def test_corruptor_delay_returns_past_value():
+    c = ObservationCorruptor(noise_std=0.0, delay_steps=2, seed=0)
+    outs = [c.apply((float(i), 0.0, 0.0))[0] for i in range(5)]
+    # 履歴が溜まるまでは最古の値、その後は 2 ステップ前
+    assert outs == [0.0, 0.0, 0.0, 1.0, 2.0]
+
+
+def test_corruptor_noise_statistics():
+    c = ObservationCorruptor(noise_std=0.01, delay_steps=0, seed=0)
+    xs = np.array([c.apply((0.0, 0.0, 0.0)) for _ in range(5000)])
+    assert np.abs(xs.mean(axis=0)).max() < 0.001
+    assert xs.std(axis=0) == pytest.approx([0.01, 0.01, 0.01], rel=0.1)
+
+
+def test_corruptor_noise_only_xy_option():
+    c = ObservationCorruptor(noise_std=0.01, delay_steps=0, seed=0, axes=(0, 1))
+    xs = np.array([c.apply((0.0, 0.0, 0.5)) for _ in range(100)])
+    assert np.all(xs[:, 2] == 0.5)
+
+
+def test_corruptor_reset_clears_history():
+    c = ObservationCorruptor(noise_std=0.0, delay_steps=3, seed=0)
+    for i in range(5):
+        c.apply((float(i), 0.0, 0.0))
+    c.reset()
+    assert c.apply((9.0, 0.0, 0.0))[0] == 9.0
+
+
+def test_corruptor_bias_is_constant_within_trial_and_resampled_on_reset():
+    c = ObservationCorruptor(noise_std=0.0, delay_steps=0, seed=0, bias_std=0.01)
+    a = [c.apply((0.0, 0.0, 0.0)) for _ in range(3)]
+    assert np.allclose(a[0], a[1]) and np.allclose(a[1], a[2])
+    assert np.linalg.norm(a[0]) > 0
+    c.reset()
+    b = c.apply((0.0, 0.0, 0.0))
+    assert not np.allclose(a[0], b)

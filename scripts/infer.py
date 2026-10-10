@@ -32,7 +32,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from lerobot.common.policies.act.modeling_act import ACTPolicy
 from pai_training.conversion import ConversionSpec
-from pai_training.inference_utils import TemporalEnsembler, compose_observation
+from pai_training.inference_utils import ObservationCorruptor, TemporalEnsembler, compose_observation
 
 DEFAULTS = {
     'device': 'cpu',
@@ -45,6 +45,8 @@ DEFAULTS = {
         'arm_command': '/crane_plus_arm_controller/joint_trajectory',
         'gripper_command': '/crane_plus_gripper_controller/joint_trajectory',
     },
+    # 物体位置の観測劣化（認識誤差・遅延への頑健性評価用）。既定は無効
+    'object_corruption': {'noise_std': 0.0, 'bias_std': 0.0, 'delay_steps': 0, 'seed': None},
     'rerun': {'enabled': False, 'web_port': 9877, 'grpc_port': 9876, 'app_id': 'crane_plus_policy'},
 }
 
@@ -83,6 +85,12 @@ class InferenceNode(Node):
         self.policy.to(self.device)
         coeff = cfg['temporal_ensemble_coeff']
         self.ensembler = TemporalEnsembler(coeff, self.policy.config.chunk_size) if coeff is not None else None
+        oc = cfg['object_corruption']
+        self.corruptor = None
+        if oc['noise_std'] > 0 or oc['delay_steps'] > 0 or oc.get('bias_std', 0) > 0:
+            self.corruptor = ObservationCorruptor(oc['noise_std'], oc['delay_steps'], oc.get('seed'),
+                                                  bias_std=oc.get('bias_std', 0.0))
+            self.get_logger().info(f'object observation corruption: {oc}')
 
         topics = {**DEFAULTS['topics'], **self.spec.topics, **cfg['topics']}
         self.arm_pub = self.create_publisher(JointTrajectory, topics['arm_command'], 10)
@@ -96,6 +104,7 @@ class InferenceNode(Node):
 
         self.joints = {}
         self.object_xyz = None
+        self.observed_object = None
         self.step = 0
         self.last_latency_ms = None
         self.last_pred = None
@@ -126,6 +135,8 @@ class InferenceNode(Node):
         self.policy.reset()
         if self.ensembler is not None:
             self.ensembler.reset()
+        if self.corruptor is not None:
+            self.corruptor.reset()
         self.step = 0
 
     def on_enable(self, req, res):
@@ -149,7 +160,11 @@ class InferenceNode(Node):
         return chunk[0].cpu().numpy()  # (chunk_size, action_dim)
 
     def on_timer(self):
-        obs = compose_observation(self.spec, self.joints, self.object_xyz)
+        object_xyz = self.object_xyz
+        if object_xyz is not None and self.corruptor is not None and self.enabled:
+            object_xyz = tuple(self.corruptor.apply(object_xyz))
+        self.observed_object = object_xyz
+        obs = compose_observation(self.spec, self.joints, object_xyz)
         if obs is None or not self.enabled:
             self.publish_status()
             return
@@ -193,8 +208,9 @@ class InferenceNode(Node):
             rr.log(f'chunk/{short}', rr.LineStrips2D([pts]))
         if self.object_xyz is not None:
             rr.log('object/xyz', rr.Points3D([self.object_xyz], radii=0.02))
-            for axis, v in zip('xyz', self.object_xyz):
-                rr.log(f'object/{axis}', rr.Scalars(v))
+            for axis, v, o in zip('xyz', self.object_xyz, self.observed_object):
+                rr.log(f'object/{axis}/true', rr.Scalars(v))
+                rr.log(f'object/{axis}/observed', rr.Scalars(float(o)))
         rr.log('latency_ms', rr.Scalars(self.last_latency_ms))
 
 
@@ -203,10 +219,19 @@ def main():
     parser.add_argument('--config', default=None, help='推論設定 YAML（省略時は演習と同じ既定値）')
     parser.add_argument('--model-path', default=None, help='学習済み方策ディレクトリ（設定の model_path を上書き）')
     parser.add_argument('--device', default=None)
+    parser.add_argument('--object-noise', type=float, default=None, help='物体位置ノイズ標準偏差 [m]')
+    parser.add_argument('--object-bias', type=float, default=None, help='試行ごとの物体位置オフセット標準偏差 [m]')
+    parser.add_argument('--object-delay', type=int, default=None, help='物体位置の遅延 [制御ステップ]')
     args = parser.parse_args()
     cfg = load_config(args.config)
     if args.device:
         cfg['device'] = args.device
+    if args.object_noise is not None:
+        cfg['object_corruption']['noise_std'] = args.object_noise
+    if args.object_bias is not None:
+        cfg['object_corruption']['bias_std'] = args.object_bias
+    if args.object_delay is not None:
+        cfg['object_corruption']['delay_steps'] = args.object_delay
     model_path = args.model_path or cfg.get('model_path')
     if not model_path:
         parser.error('--model-path か設定の model_path が必要です')

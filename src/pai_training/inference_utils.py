@@ -51,3 +51,35 @@ class TemporalEnsembler:
         preds = np.stack(self._buffer.popleft())
         weights = np.exp(-self.coeff * np.arange(len(preds)))
         return (weights[:, None] * preds).sum(axis=0) / weights.sum()
+
+
+class ObservationCorruptor:
+    """物体位置の観測を劣化させる（認識誤差・遅延への頑健性評価用）.
+
+    - delay_steps: 制御ステップ単位の遅延（履歴が溜まるまでは最古の値）
+    - noise_std: 各軸に加える独立なガウスノイズの標準偏差 [m]（毎ステップ独立）
+    - bias_std: 試行ごとに一定のオフセット（キャリブレーション誤差を模擬）の標準偏差 [m]。reset で再サンプル
+    - axes: ノイズを加える軸（既定は x, y, z すべて）
+    """
+
+    def __init__(self, noise_std: float, delay_steps: int, seed: Optional[int] = None,
+                 axes: Sequence[int] = (0, 1, 2), bias_std: float = 0.0):
+        self.noise_std = float(noise_std)
+        self.bias_std = float(bias_std)
+        self.delay_steps = int(delay_steps)
+        self.axes = list(axes)
+        self.rng = np.random.default_rng(seed)
+        self.reset()
+
+    def reset(self) -> None:
+        self._history = deque(maxlen=self.delay_steps + 1)
+        self._bias = np.zeros(3)
+        if self.bias_std > 0:
+            self._bias[self.axes] = self.rng.normal(0.0, self.bias_std, size=len(self.axes))
+
+    def apply(self, xyz: Sequence[float]) -> np.ndarray:
+        self._history.append(np.asarray(xyz, dtype=np.float64)[:3])
+        out = self._history[0].copy() + self._bias
+        if self.noise_std > 0:
+            out[self.axes] += self.rng.normal(0.0, self.noise_std, size=len(self.axes))
+        return out
