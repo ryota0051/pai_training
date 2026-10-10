@@ -37,5 +37,6 @@ convert = { cmd = "python scripts/rosbag2lerobot.py" }
 train = { cmd = "python scripts/train.py" }
 debug-policy = { cmd = "python scripts/debug_policy.py" }
 infer = { cmd = "python scripts/infer.py" }
+eval-trace = { cmd = "python scripts/analysis/eval_bag_trace.py" }
 test = { cmd = "python -m pytest tests -q", env = { PYTEST_DISABLE_PLUGIN_AUTOLOAD = "1" } }
 

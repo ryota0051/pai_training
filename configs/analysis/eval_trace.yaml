@@ -1,0 +1,14 @@
+# 評価 rosbag の試行ごとのトレース解析（scripts/analysis/eval_bag_trace.py）
+kinematics_package: "/home/ubuntu/final_task/ros2_ws/src/crane_plus_kinematics"
+kinematics_config: "/home/ubuntu/final_task/ros2_ws/src/crane_plus_kinematics/config/kinematics.yaml"
+joint_order:                     # conversion_config と同じ（最後がグリッパ）
+  - crane_plus_joint1
+  - crane_plus_joint2
+  - crane_plus_joint3
+  - crane_plus_joint4
+  - crane_plus_joint_hand
+gripper_index: 4
+close_threshold: 0.12            # task.yaml の grasp_assist.close_threshold
+approach_z: 0.05                 # これを下回ったら下降中とみなす [m]
+plot_seconds: 4.0                # 開始〜把持（閉じ始め）までを描く [s]
+output_dir: "/home/ubuntu/dataset/analysis/eval_trace"
