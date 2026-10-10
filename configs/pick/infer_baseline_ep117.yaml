@@ -5,7 +5,7 @@ device: "cuda"
 rate: 20.0
 trajectory_time: 0.1
 start_enabled: false            # ブラウザ UI / 評価スクリプトから /policy/enable で開始
-temporal_ensemble_coeff: null   # 例: 0.01 で ACT の temporal ensembling を有効化
+temporal_ensemble_coeff: 0.01   # ACT の temporal ensembling（実験3で 55%→100%）。null で無効
 
 # 物体位置の観測劣化（頑健性評価用。--object-noise / --object-delay で上書き可）
 object_corruption:
