@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import yaml
-from PIL import Image
+from PIL import Image, ImageDraw
 from transformers import RTDetrImageProcessor, RTDetrV2ForObjectDetection
 
 
@@ -31,6 +31,7 @@ def main():
     parser.add_argument('--config', required=True)
     parser.add_argument('--dataset-dir', default=None)
     parser.add_argument('--label', default='dr_test')
+    parser.add_argument('--examples', type=int, default=0, help='検出結果を描いた画像を先頭から何枚並べて保存するか')
     args = parser.parse_args()
     cfg = yaml.safe_load(Path(args.config).read_text())
     sys.path.insert(0, cfg['pai_task_env_path'])
@@ -51,7 +52,7 @@ def main():
     d = Path(args.dataset_dir or cfg['dataset_dir']).expanduser()
     coco = json.loads((d / 'annotations.json').read_text())
     meta = {m['image_id']: m for m in map(json.loads, open(d / 'meta.jsonl'))}
-    rows = []
+    rows, examples = [], []
     for im in coco['images']:
         m = meta[im['id']]
         obj = np.asarray(m['object'][:2])
@@ -75,6 +76,17 @@ def main():
         if cen is not None:
             p = cam.pixel_to_plane(cen[0], cen[1], cam_all['plane_z'])
             err_red = float(np.linalg.norm(np.asarray(p[:2]) - obj) * 1000)
+        if len(examples) < args.examples:
+            # 黄: 学習した検出器の枠、赤い×: 赤色検出の推定位置（検出できなければ描かない）
+            vis = img.copy()
+            dr = ImageDraw.Draw(vis)
+            if err_det is not None:
+                dr.rectangle([u0, v0, u1, v1], outline=(255, 230, 0), width=2)
+            if cen is not None:
+                cu, cv_ = cen
+                dr.line([cu - 6, cv_ - 6, cu + 6, cv_ + 6], fill=(255, 40, 40), width=3)
+                dr.line([cu - 6, cv_ + 6, cu + 6, cv_ - 6], fill=(255, 40, 40), width=3)
+            examples.append(vis)
         hue = colorsys.rgb_to_hsv(*m['scene']['object_rgb'])[0]
         rows.append({'image_id': im['id'], 'err_detector_mm': err_det, 'score': score, 'err_red_mm': err_red,
                      'object_hue': hue, 'distractors': len(m['scene']['distractors'])})
@@ -94,6 +106,13 @@ def main():
         'red_threshold_on_reddish_objects': summarize([r_['err_red_mm'] for r_ in redish], len(redish)),
     }
     (out_dir / f'{args.label}_summary.json').write_text(json.dumps(summary, indent=2))
+    if examples:
+        cols = 4
+        w, h = examples[0].size
+        grid = Image.new('RGB', (cols * w, ((len(examples) + cols - 1) // cols) * h), 'white')
+        for i, e in enumerate(examples):
+            grid.paste(e, ((i % cols) * w, (i // cols) * h))
+        grid.save(out_dir / f'{args.label}_examples.png')
     print(json.dumps(summary, indent=2))
 
 
