@@ -42,7 +42,7 @@ class DetectNode(Node):
         self.model = RTDetrV2ForObjectDetection.from_pretrained(cfg['model_dir']).to(self.device).eval()
         self.episode = None
         self.pub = self.create_publisher(PoseStamped, cfg['output_topic'], 10)
-        self.status_pub = self.create_publisher(String, '/task/detector_status', 10)
+        self.status_pub = self.create_publisher(String, cfg.get('status_topic', '/task/detector_status'), 10)
         self.create_subscription(Image, cfg['image_topic'], self.on_image, 2)
         self.create_subscription(String, '/task/status',
                                  lambda m: setattr(self, 'episode', json.loads(m.data).get('episode')), 10)
