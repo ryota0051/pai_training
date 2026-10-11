@@ -1,0 +1,10 @@
+# 学習した物体検出器の ROS ノード（scripts/detection/detect_node.py）。赤色検出ノードと同じトピックへ出力する
+model_dir: "/home/ubuntu/checkpoints/detector/rtdetr_dr_v1"
+pai_task_env_path: "/home/ubuntu/final_task/ros2_ws/src/pai_task_env"
+camera_config: "/home/ubuntu/final_task/ros2_ws/src/pai_task_env/config/camera.yaml"   # カメラモデル・遮蔽時の保持設定
+image_topic: /task/camera/image
+output_topic: /task/object_pose_est
+score_threshold: 0.5
+object_size: 0.04
+object_center_z: 0.02       # 出力する物体中心の高さ（学習データの物体位置と揃える）
+device: "cuda"
