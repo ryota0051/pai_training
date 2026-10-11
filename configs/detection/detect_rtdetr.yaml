@@ -4,6 +4,7 @@ pai_task_env_path: "/home/ubuntu/final_task/ros2_ws/src/pai_task_env"
 camera_config: "/home/ubuntu/final_task/ros2_ws/src/pai_task_env/config/camera.yaml"   # カメラモデル・遮蔽時の保持設定
 image_topic: /task/camera/image
 output_topic: /task/object_pose_est
+status_topic: /task/detector_status
 score_threshold: 0.5
 object_size: 0.04
 object_center_z: 0.02       # 出力する物体中心の高さ（学習データの物体位置と揃える）
