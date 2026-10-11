@@ -1,0 +1,10 @@
+# 物体検出器の評価（scripts/detection/eval_detector.py）。学習に使っていない画像で位置誤差を測り、赤色検出と比べる
+model_dir: "/home/ubuntu/checkpoints/detector/rtdetr_dr_v1"
+dataset_dir: "/home/ubuntu/dataset/detector/dr_test"
+pai_task_env_path: "/home/ubuntu/final_task/ros2_ws/src/pai_task_env"     # カメラモデル・逆算（ROS 非依存）を流用
+camera_config: "/home/ubuntu/final_task/ros2_ws/src/pai_task_env/config/camera.yaml"
+score_threshold: 0.5
+object_size: 0.04          # 円柱の直径・高さ [m]
+object_center_z: 0.02
+device: "cuda"
+output_dir: "/home/ubuntu/dataset/detector/eval"
