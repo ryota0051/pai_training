@@ -10,7 +10,7 @@ wandb_mode: "disabled"          # wandb を使う場合は online（要 pixi run
 wandb_project: "pai_crane_pick"
 episodes: null                  # 学習に使うエピソード（null で全て）
 
-training_steps: 20000
+training_steps: 60000            # 最終モデルの学習量（実験2: 20k では学習不足）
 log_freq: 200
 num_workers: 4
 batch_size: 32
