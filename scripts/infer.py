@@ -32,6 +32,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from lerobot.common.policies.act.modeling_act import ACTPolicy
 from pai_training.conversion import ConversionSpec
+from pai_training.fk_loader import make_fk
 from pai_training.inference_utils import ObservationCorruptor, TemporalEnsembler, compose_observation
 
 DEFAULTS = {
@@ -75,7 +76,9 @@ class InferenceNode(Node):
     def __init__(self, cfg, model_path):
         super().__init__('crane_plus_act_infer')
         with open(cfg['conversion_config']) as f:
-            self.spec = ConversionSpec.from_dict(yaml.safe_load(f))
+            conv_cfg = yaml.safe_load(f)
+        self.spec = ConversionSpec.from_dict(conv_cfg)
+        self.fk = make_fk(conv_cfg)   # object_minus_ee を観測に使うモデルのみ
         self.device = torch.device(cfg['device'])
         self.traj_time = cfg['trajectory_time']
         self.enabled = bool(cfg['start_enabled'])
@@ -164,7 +167,7 @@ class InferenceNode(Node):
         if object_xyz is not None and self.corruptor is not None and self.enabled:
             object_xyz = tuple(self.corruptor.apply(object_xyz))
         self.observed_object = object_xyz
-        obs = compose_observation(self.spec, self.joints, object_xyz)
+        obs = compose_observation(self.spec, self.joints, object_xyz, fk=self.fk)
         if obs is None or not self.enabled:
             self.publish_status()
             return
@@ -185,7 +188,7 @@ class InferenceNode(Node):
     def publish_status(self):
         self.status_pub.publish(String(data=json.dumps({
             'enabled': self.enabled,
-            'ready': compose_observation(self.spec, self.joints, self.object_xyz) is not None,
+            'ready': compose_observation(self.spec, self.joints, self.object_xyz, fk=self.fk) is not None,
             'step': self.step,
             'latency_ms': None if self.last_latency_ms is None else round(self.last_latency_ms, 2),
             'predicted': None if self.last_pred is None else [round(float(v), 4) for v in self.last_pred],

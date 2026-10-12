@@ -98,3 +98,27 @@ def test_spec_from_dict_defaults_match_upstream():
 def test_unknown_source_raises():
     with pytest.raises(ValueError):
         ConversionSpec.from_dict({'observation': {'state': ['foo']}})
+
+
+def _fake_fk(arm_joints):
+    """テスト用の順運動学: 手先位置 = 先頭 3 関節の値."""
+    return [arm_joints[0], arm_joints[1], arm_joints[2]]
+
+
+def test_object_minus_ee_source_uses_forward_kinematics():
+    js, arm, grip, obj = _msgs()
+    spec = ConversionSpec(joint_order=ORDER, target_freq=10,
+                          state_sources=['joints'], env_state_sources=['object_xyz', 'object_minus_ee'])
+    assert spec.needs_object and spec.needs_fk
+    arrays = build_episode_arrays(spec, js, arm, grip, obj, fk=_fake_fk)
+    env = arrays['observation.environment_state']
+    assert env.shape[1] == 6
+    # 先頭フレーム: 物体 (0.12, 0.05, 0.02) − 手先 (j1, j2, j3) = (0.0, 0.2, 0.3)（ORDER は j1, j2, j4, j3）
+    assert env[0, 3:].tolist() == pytest.approx([0.12 - 0.0, 0.05 - 0.2, 0.02 - 0.4])
+
+
+def test_object_minus_ee_requires_fk():
+    js, arm, grip, obj = _msgs()
+    spec = ConversionSpec(joint_order=ORDER, env_state_sources=['object_minus_ee'])
+    with pytest.raises(ValueError):
+        build_episode_arrays(spec, js, arm, grip, obj)
