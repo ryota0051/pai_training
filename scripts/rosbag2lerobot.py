@@ -20,6 +20,7 @@ from rosbags.serde import deserialize_cdr
 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from pai_training.conversion import ConversionSpec, build_episode_arrays
+from pai_training.fk_loader import make_fk
 from pai_training.episode_discovery import find_episode_dirs
 
 
@@ -60,6 +61,7 @@ def main():
     with open(args.config, 'r') as f:
         conv_cfg = yaml.safe_load(f)
     spec = ConversionSpec.from_dict(conv_cfg)
+    fk = make_fk(conv_cfg)   # object_minus_ee を使う場合のみ
     features_cfg = load_config_py(conv_cfg['config'])
     bag_dir = conv_cfg['bag_dir']   # 文字列、または複数ディレクトリのリスト（順に連結）
     output_dir = Path(conv_cfg['output_dir']).expanduser().resolve()
@@ -91,7 +93,7 @@ def main():
         try:
             msgs = read_messages(ep_dir, spec)
             arrays = build_episode_arrays(spec, msgs['joint_states'], msgs['arm_command'],
-                                          msgs['gripper_command'], msgs.get('object_pose'))
+                                          msgs['gripper_command'], msgs.get('object_pose'), fk=fk)
             episodes.append((ep_dir, arrays))
             print(f'  {ep_dir.name}: {len(arrays["action"])} frames')
         except Exception as e:  # 1 エピソードの不備で全体を止めない

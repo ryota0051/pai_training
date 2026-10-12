@@ -107,3 +107,12 @@ def test_corruptor_bias_is_constant_within_trial_and_resampled_on_reset():
     c.reset()
     b = c.apply((0.0, 0.0, 0.0))
     assert not np.allclose(a[0], b)
+
+
+def test_compose_observation_object_minus_ee():
+    spec = ConversionSpec(joint_order=ORDER, state_sources=['joints'],
+                          env_state_sources=['object_xyz', 'object_minus_ee'])
+    joints = {n: float(i) for i, n in enumerate(ORDER)}          # j1=0, j2=1, j3=2, j4=3
+    fk = lambda q: [q[0] + 0.1, q[1], 0.0]                        # 手先 = (0.1, 1.0, 0.0)
+    obs = compose_observation(spec, joints, (0.3, 0.2, 0.1), fk=fk)
+    assert obs['observation.environment_state'].tolist() == pytest.approx([0.3, 0.2, 0.1, 0.2, -0.8, 0.1])
