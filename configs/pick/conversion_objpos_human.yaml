@@ -3,7 +3,7 @@ bag_dir: "/home/ubuntu/dataset/rosbags/pick_place_human"
 output_dir: "/home/ubuntu/dataset/lerobot_dataset/crane_plus_pick_objpos_human"
 config: "configs/pick/features_objpos.py"
 target_freq: 20
-pad_to_longest: true
+pad_to_longest: false          # 混合版（mixhuman）と条件を揃える
 
 # 学習・推論で共通の関節順（名前で並べ替える）。最後がグリッパ
 joint_order:
