@@ -46,7 +46,7 @@ def read_messages(episode_dir: Path, spec: ConversionSpec):
             elif key in ('arm_command', 'gripper_command'):
                 if msg.points:
                     out[key].append((ts, list(msg.joint_names), list(msg.points[0].positions)))
-            elif key == 'object_pose':
+            elif key in ('object_pose', 'place_pose'):
                 p = msg.pose.position
                 out[key].append((ts, None, [p.x, p.y, p.z]))
     return out
@@ -93,7 +93,8 @@ def main():
         try:
             msgs = read_messages(ep_dir, spec)
             arrays = build_episode_arrays(spec, msgs['joint_states'], msgs['arm_command'],
-                                          msgs['gripper_command'], msgs.get('object_pose'), fk=fk)
+                                          msgs['gripper_command'], msgs.get('object_pose'), fk=fk,
+                                          place_poses=msgs.get('place_pose'))
             episodes.append((ep_dir, arrays))
             print(f'  {ep_dir.name}: {len(arrays["action"])} frames')
         except Exception as e:  # 1 エピソードの不備で全体を止めない

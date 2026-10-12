@@ -122,3 +122,33 @@ def test_object_minus_ee_requires_fk():
     spec = ConversionSpec(joint_order=ORDER, env_state_sources=['object_minus_ee'])
     with pytest.raises(ValueError):
         build_episode_arrays(spec, js, arm, grip, obj)
+
+
+# ---- 置き場所の位置（place_xy, 実験12: 置き場所もランダムに変える） ----
+def _place_msgs():
+    ns = 1_000_000_000
+    return [(t * ns // 20, None, [0.08, -0.1, 0.0]) for t in range(0, 41)]
+
+
+def test_place_xy_source_appends_place_position():
+    js, arm, grip, obj = _msgs()
+    spec = ConversionSpec(joint_order=ORDER, target_freq=10,
+                          state_sources=['joints'], env_state_sources=['object_xyz', 'place_xy'])
+    arrays = build_episode_arrays(spec, js, arm, grip, obj, place_poses=_place_msgs())
+    env = arrays['observation.environment_state']
+    assert env.shape[1] == 5
+    assert env[0].tolist() == pytest.approx([0.12, 0.05, 0.02, 0.08, -0.1])
+
+
+def test_place_xy_requires_place_messages():
+    js, arm, grip, obj = _msgs()
+    spec = ConversionSpec(joint_order=ORDER, state_sources=['joints'], env_state_sources=['object_xyz', 'place_xy'])
+    with pytest.raises(ValueError, match='place'):
+        build_episode_arrays(spec, js, arm, grip, obj)
+
+
+def test_spec_needs_place_and_default_topic():
+    spec = ConversionSpec.from_dict({'observation': {'environment_state': ['object_xyz', 'place_xy']},
+                                     'topics': {'place_pose': '/task/place_pose'}})
+    assert spec.needs_place and spec.topics['place_pose'] == '/task/place_pose'
+    assert not ConversionSpec().needs_place

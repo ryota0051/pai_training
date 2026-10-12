@@ -11,11 +11,14 @@ from pai_training.conversion import ConversionSpec, ForwardKinematics
 
 def compose_observation(spec: ConversionSpec, joints_by_name: Mapping[str, float],
                         object_xyz: Optional[Sequence[float]],
-                        fk: Optional[ForwardKinematics] = None) -> Optional[Dict[str, np.ndarray]]:
+                        fk: Optional[ForwardKinematics] = None,
+                        place_xy: Optional[Sequence[float]] = None) -> Optional[Dict[str, np.ndarray]]:
     """変換時と同じ規則（joint_order・observation sources）で観測ベクトルを作る. 揃っていなければ None."""
     if any(n not in joints_by_name for n in spec.joint_order):
         return None
     if spec.needs_object and object_xyz is None:
+        return None
+    if spec.needs_place and place_xy is None:
         return None
     sources = {'joints': np.array([joints_by_name[n] for n in spec.joint_order], dtype=np.float32)}
     if object_xyz is not None:
@@ -25,6 +28,8 @@ def compose_observation(spec: ConversionSpec, joints_by_name: Mapping[str, float
             raise ValueError('object_minus_ee is requested but no forward kinematics (fk) was given')
         ee = np.asarray(fk(sources['joints'][:-1]), dtype=np.float32)
         sources['object_minus_ee'] = sources['object_xyz'] - ee
+    if place_xy is not None:
+        sources['place_xy'] = np.asarray(place_xy, dtype=np.float32)[:2]
     return {
         'observation.state': np.concatenate([sources[s] for s in spec.state_sources]),
         'observation.environment_state': np.concatenate([sources[s] for s in spec.env_state_sources]),

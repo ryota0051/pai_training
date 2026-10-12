@@ -2,7 +2,7 @@
 
 メッセージは (timestamp_ns, names, values) のタプル列で受け取る。
 - joint_states / arm_command / gripper_command: names は関節名、values は位置
-- object_pose: names は None、values は [x, y, z]
+- object_pose / place_pose: names は None、values は [x, y, z]
 
 upstream の rosbag2lerobot.py は /joint_states をメッセージ内の並び順のまま使っていたが、
 ここでは joint_order に従って **名前で並べ替える**（指令側の関節順が異なっても整合する）。
@@ -26,9 +26,11 @@ DEFAULT_TOPICS = {
     'arm_command': '/crane_plus_arm_controller/joint_trajectory',
     'gripper_command': '/crane_plus_gripper_controller/joint_trajectory',
     'object_pose': None,
+    'place_pose': None,
 }
 # object_minus_ee: 物体位置 − 手先位置（順運動学）。人が目で見ている「手先と物体のずれ」を明示的に与える（実験11）
-SOURCES = ('joints', 'object_xyz', 'object_minus_ee')
+# place_xy: 置き場所の中心 [x, y]。置き場所もエピソードごとに変える場合に使う（実験12）
+SOURCES = ('joints', 'object_xyz', 'object_minus_ee', 'place_xy')
 # 順運動学: arm_joints の順の関節角 → 手先（把持中心）の位置 [x, y, z]
 ForwardKinematics = Callable[[Sequence[float]], Sequence[float]]
 
@@ -59,6 +61,10 @@ class ConversionSpec:
     def needs_object(self) -> bool:
         used = self.state_sources + self.env_state_sources
         return 'object_xyz' in used or 'object_minus_ee' in used
+
+    @property
+    def needs_place(self) -> bool:
+        return 'place_xy' in self.state_sources + self.env_state_sources
 
     @property
     def needs_fk(self) -> bool:
@@ -111,16 +117,21 @@ def build_episode_arrays(spec: ConversionSpec,
                          arm_commands: Sequence[Message],
                          gripper_commands: Sequence[Message],
                          object_poses: Optional[Sequence[Message]] = None,
-                         fk: Optional[ForwardKinematics] = None) -> Dict[str, np.ndarray]:
+                         fk: Optional[ForwardKinematics] = None,
+                         place_poses: Optional[Sequence[Message]] = None) -> Dict[str, np.ndarray]:
     """1 エピソード分の observation.state / observation.environment_state / action を作る."""
     if spec.needs_object and not object_poses:
         raise ValueError('object_xyz is requested but no object pose messages were given')
     if spec.needs_fk and fk is None:
         raise ValueError('object_minus_ee is requested but no forward kinematics (fk) was given')
+    if spec.needs_place and not place_poses:
+        raise ValueError('place_xy is requested but no place pose messages were given')
 
     streams = [joint_states, arm_commands, gripper_commands]
     if spec.needs_object:
         streams.append(object_poses)
+    if spec.needs_place:
+        streams.append(place_poses)
     start, end = time_window([_times(s) for s in streams])
     n = num_frames(start, end, spec.target_freq)
     if n <= 0:
@@ -138,6 +149,9 @@ def build_episode_arrays(spec: ConversionSpec,
     if spec.needs_fk:
         ee = np.array([fk(q[:-1]) for q in sources['joints']])
         sources['object_minus_ee'] = sources['object_xyz'] - ee
+    if spec.needs_place:
+        place = np.array([list(v)[:2] for _, _, v in place_poses])
+        sources['place_xy'] = sample_and_hold(_times(place_poses), place, target)
 
     action = np.hstack([sample_and_hold(_times(arm_commands), arm, target),
                         sample_and_hold(_times(gripper_commands), grip, target)])

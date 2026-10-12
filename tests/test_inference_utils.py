@@ -116,3 +116,12 @@ def test_compose_observation_object_minus_ee():
     fk = lambda q: [q[0] + 0.1, q[1], 0.0]                        # 手先 = (0.1, 1.0, 0.0)
     obs = compose_observation(spec, joints, (0.3, 0.2, 0.1), fk=fk)
     assert obs['observation.environment_state'].tolist() == pytest.approx([0.3, 0.2, 0.1, 0.2, -0.8, 0.1])
+
+
+def test_compose_observation_with_place():
+    spec = ConversionSpec(joint_order=ORDER, state_sources=['joints'], env_state_sources=['object_xyz', 'place_xy'])
+    joints = {n: 0.0 for n in ORDER}
+    obs = compose_observation(spec, joints, (0.1, 0.2, 0.02), place_xy=(0.05, -0.1))
+    assert obs['observation.environment_state'].tolist() == pytest.approx([0.1, 0.2, 0.02, 0.05, -0.1])
+    # 置き場所が未受信なら観測は揃っていない
+    assert compose_observation(spec, joints, (0.1, 0.2, 0.02)) is None
