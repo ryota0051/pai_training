@@ -1,0 +1,18 @@
+# 2 クラスの検出器（物体・置き場所）の ROS ノード設定（実験12）。物体は赤色検出と同じトピック、置き場所は /task/place_pose_est へ
+model_dir: "/home/ubuntu/checkpoints/detector/rtdetr_dr_v2"
+pai_task_env_path: "/home/ubuntu/final_task/ros2_ws/src/pai_task_env"
+camera_config: "/home/ubuntu/final_task/ros2_ws/src/pai_task_env/config/camera.yaml"   # カメラモデル・遮蔽時の保持設定
+image_topic: /task/camera/image
+output_topic: /task/object_pose_est
+status_topic: /task/detector_status
+score_threshold: 0.5
+object_size: 0.04
+object_center_z: 0.02       # 出力する物体中心の高さ（学習データの物体位置と揃える）
+device: "cuda"
+object_label: 0
+place:                      # 置き場所（厚さ 1mm の円板）。腕に隠れている間は最後の推定値を出し続ける
+  label: 1
+  output_topic: /task/place_pose_est
+  radius: 0.035
+  height: 0.001
+  center_z: 0.0005          # 円板の中心の高さ（方策は x, y だけを使う）

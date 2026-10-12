@@ -1,0 +1,23 @@
+# 物体と置き場所の 2 クラスの検出器（RT-DETRv2）の学習設定（実験12）。データは dr_dataset_generator を place.enabled:=true で生成
+dataset_dirs: ["/home/ubuntu/dataset/detector/dr_v2"]
+val_ratio: 0.1
+seed: 0
+model: "PekingU/rtdetr_v2_r18vd"     # COCO 事前学習済み（Apache-2.0）
+labels: ["target", "place"]          # COCO の category_id 0, 1
+image_size: 640                     # 320x240 の俯瞰画像を拡大して入力
+epochs: 40
+batch_size: 16
+lr: 0.0001
+lr_backbone: 0.00001
+weight_decay: 0.0001
+num_workers: 4
+device: "cuda"
+augment:                            # 学習時のみ（照明・色・画質の変化への頑健性）
+  brightness: 0.3
+  contrast: 0.3
+  saturation: 0.3
+  hue: 0.05
+  blur_prob: 0.3
+  noise_std: 0.02
+  flip_prob: 0.5
+output_dir: "/home/ubuntu/checkpoints/detector/rtdetr_dr_v2"

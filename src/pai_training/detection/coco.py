@@ -30,3 +30,14 @@ def split_ids(ids: Iterable[int], val_ratio: float, seed: int) -> Tuple[List[int
     rng.shuffle(ids)
     n_val = int(round(len(ids) * val_ratio))
     return sorted(ids[n_val:]), sorted(ids[:n_val])
+
+
+def best_per_class(scores: Sequence[float], labels: Sequence[int],
+                   boxes: Sequence[Sequence[float]]) -> Dict[int, Tuple[List[float], float]]:
+    """検出結果からクラスごとに最もスコアの高い枠を選ぶ → {label: (box, score)}."""
+    best: Dict[int, Tuple[List[float], float]] = {}
+    for s, c, b in zip(scores, labels, boxes):
+        s, c = float(s), int(c)
+        if c not in best or s > best[c][1]:
+            best[c] = (list(b), s)
+    return best
