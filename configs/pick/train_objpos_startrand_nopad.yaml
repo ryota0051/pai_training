@@ -1,0 +1,29 @@
+# 把持・配置タスク (objpos) スクリプトデモ 235・延長なしの学習設定（実験10 の比較用 A）
+dataset_root: "/home/ubuntu/dataset/lerobot_dataset/crane_plus_pick_objpos_startrand_nopad"
+repo_id: "crane_plus_pick_objpos"
+output_directory: "/home/ubuntu/checkpoints/train/crane_plus_pick_objpos_startrand_nopad_act"
+config_path: "configs/pick/features_objpos.py"
+
+device: "cuda"
+seed: 0
+wandb_mode: "disabled"          # wandb を使う場合は online（要 pixi run wandb login）
+wandb_project: "pai_crane_pick"
+episodes: null                  # 学習に使うエピソード（null で全て）
+
+training_steps: 60000            # 最終モデルの学習量（実験2: 20k では学習不足）
+log_freq: 200
+num_workers: 4
+batch_size: 32
+learning_rate: 0.0001
+weight_decay: 0.0001
+chunk_size: 16
+n_action_steps: 1               # 推論時は毎ステップ再計画（演習と同じ）
+
+# データセットは 20fps。行動チャンクは現在 (0.0s) から 16 ステップ先 (0.75s) まで
+# （演習の設定は -0.1s 始まりで、実行される先頭行動が 0.1s 前の行動になっていた）
+delta_timestamps:
+  observation.environment_state: [0.0]
+  observation.state: [0.0]
+  action: [0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75]
+
+act: {}                         # ACTConfig への追加引数（例: kl_weight, dim_model）
