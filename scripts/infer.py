@@ -33,7 +33,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from lerobot.common.policies.act.modeling_act import ACTPolicy
 from pai_training.conversion import ConversionSpec
 from pai_training.fk_loader import make_fk
-from pai_training.inference_utils import ObservationCorruptor, TemporalEnsembler, compose_observation
+from pai_training.inference_utils import ObjectLatch, ObservationCorruptor, TemporalEnsembler, compose_observation
 
 DEFAULTS = {
     'device': 'cpu',
@@ -90,6 +90,11 @@ class InferenceNode(Node):
         self.ensembler = TemporalEnsembler(coeff, self.policy.config.chunk_size) if coeff is not None else None
         oc = cfg['object_corruption']
         self.corruptor = None
+        # グリッパが閉じている間は物体位置を固定する（学習データと同じ規則, 実験12 の改良 A'）
+        self.latch = None
+        if 'object_xyz_latched' in self.spec.state_sources + self.spec.env_state_sources:
+            self.latch = ObjectLatch(self.spec.object_latch['close'], self.spec.object_latch['open'])
+            self.get_logger().info(f'object latch while gripper closed: {self.spec.object_latch}')
         if oc['noise_std'] > 0 or oc['delay_steps'] > 0 or oc.get('bias_std', 0) > 0:
             self.corruptor = ObservationCorruptor(oc['noise_std'], oc['delay_steps'], oc.get('seed'),
                                                   bias_std=oc.get('bias_std', 0.0))
@@ -147,6 +152,8 @@ class InferenceNode(Node):
             self.ensembler.reset()
         if self.corruptor is not None:
             self.corruptor.reset()
+        if self.latch is not None:
+            self.latch.reset()
         self.step = 0
 
     def on_enable(self, req, res):
@@ -173,6 +180,8 @@ class InferenceNode(Node):
         object_xyz = self.object_xyz
         if object_xyz is not None and self.corruptor is not None and self.enabled:
             object_xyz = tuple(self.corruptor.apply(object_xyz))
+        if self.latch is not None and self.spec.gripper_joint in self.joints:
+            object_xyz = self.latch.update(object_xyz, self.joints[self.spec.gripper_joint])
         self.observed_object = object_xyz
         obs = compose_observation(self.spec, self.joints, object_xyz, fk=self.fk, place_xy=self.place_xy)
         if obs is None or not self.enabled:

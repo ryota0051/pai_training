@@ -22,7 +22,7 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import String
 from transformers import RTDetrImageProcessor, RTDetrV2ForObjectDetection
 
-from pai_training.detection.coco import best_per_class
+from pai_training.detection.coco import RecentMedian, best_per_class
 
 
 class DetectNode(Node):
@@ -41,6 +41,8 @@ class DetectNode(Node):
         self.threshold = cfg['score_threshold']
         self.holder = EstimateHolder(hold_last=cam_all['hold_last'], min_visible_ratio=cam_all['min_visible_ratio'])
         self.label = cfg.get('object_label', 0)
+        # 採用した検出の直近 median_window 回の中央値を出す（一部が隠れた瞬間の外れ値を除く。1 なら従来どおり）
+        self.median = RecentMedian(cfg.get('median_window', 1))
         # 置き場所（厚さ 1mm の円板）。腕に隠れても動かないので、最後の推定値を保持する
         self.place = cfg.get('place')
         if self.place:
@@ -106,6 +108,10 @@ class DetectNode(Node):
             detection, area = (x, y, self.zc), int((u1 - u0) * (v1 - v0))
         # 枠の面積を「見えている量」として部分遮蔽の判定に使う（赤色検出の画素数と同じ扱い）
         estimate = self.holder.update(detection, self.episode, pixels=area)
+        accepted = detection if detection is not None and not self.holder.partially_occluded else None
+        median = self.median.update(accepted, self.episode)
+        if estimate is not None and median is not None:
+            estimate = median
         if estimate is not None:
             self.publish_pose(self.pub, msg.header.stamp, estimate)
         status = {

@@ -10,6 +10,7 @@ object_size: 0.04
 object_center_z: 0.02       # 出力する物体中心の高さ（学習データの物体位置と揃える）
 device: "cuda"
 object_label: 0
+median_window: 3            # 採用した検出の直近 3 回（カメラ 10Hz で 0.3 秒）の中央値を出す。一部が隠れた瞬間の外れ値を除く（実験12）
 place:                      # 置き場所（厚さ 1mm の円板）。腕に隠れている間は最後の推定値を出し続ける
   label: 1
   output_topic: /task/place_pose_est

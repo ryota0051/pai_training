@@ -152,3 +152,36 @@ def test_spec_needs_place_and_default_topic():
                                      'topics': {'place_pose': '/task/place_pose'}})
     assert spec.needs_place and spec.topics['place_pose'] == '/task/place_pose'
     assert not ConversionSpec().needs_place
+
+
+# ---- グリッパが閉じている間は物体位置を固定する（object_xyz_latched, 実験12 の改良 A'） ----
+def test_latch_while_closed_holds_value_from_last_open_step():
+    from pai_training.conversion import latch_while_closed
+    obj = np.array([[0.0], [1.0], [2.0], [3.0], [4.0], [5.0], [6.0]])
+    grip = np.array([-0.5, -0.5, 0.2, 0.3, 0.05, -0.1, -0.5])   # 閉(≥0.12) → 間(0.05 は閉のまま) → 開(≤0.0)
+    out = latch_while_closed(obj, grip, close=0.12, open_=0.0)
+    # 閉じた時点（index 2）から開くまで（index 4）は、閉じる直前（index 1）の値
+    assert out[:, 0].tolist() == [0.0, 1.0, 1.0, 1.0, 1.0, 5.0, 6.0]
+
+
+def test_latch_while_closed_when_closed_from_start_uses_first_value():
+    from pai_training.conversion import latch_while_closed
+    out = latch_while_closed(np.array([[1.0], [2.0]]), np.array([0.3, 0.3]), close=0.12, open_=0.0)
+    assert out[:, 0].tolist() == [1.0, 1.0]
+
+
+def test_object_xyz_latched_source():
+    js, arm, grip, obj = _msgs()
+    spec = ConversionSpec(joint_order=ORDER, target_freq=20, state_sources=['joints'],
+                          env_state_sources=['object_xyz_latched'], object_latch={'close': 0.12, 'open': 0.0})
+    arrays = build_episode_arrays(spec, js, arm, grip, obj)
+    env = arrays['observation.environment_state']
+    # _msgs の物体は y が毎ステップ 0.001 ずつ動くが、hand は -0.5 で開いたままなので固定されない
+    assert env[5, 1] > env[0, 1]
+    assert spec.needs_object
+
+
+def test_spec_reads_object_latch():
+    spec = ConversionSpec.from_dict({'observation': {'environment_state': ['object_xyz_latched', 'place_xy']},
+                                     'object_latch': {'close': 0.1, 'open': -0.1}})
+    assert spec.object_latch == {'close': 0.1, 'open': -0.1}

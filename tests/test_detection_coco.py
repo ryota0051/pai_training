@@ -35,3 +35,14 @@ def test_best_per_class_picks_highest_score_of_each_label():
     best = best_per_class(scores, labels, boxes)
     assert best == {0: ([2, 2, 3, 3], 0.7), 1: ([1, 1, 2, 2], 0.9)}
     assert best_per_class([], [], []) == {}
+
+
+def test_recent_median_rejects_single_outlier_and_resets():
+    from pai_training.detection.coco import RecentMedian
+    m = RecentMedian(window=5)
+    for v in [(0.10, 0.10, 0.02), (0.101, 0.10, 0.02), (0.10, 0.099, 0.02)]:
+        m.update(v, episode=1)
+    out = m.update((0.09, 0.13, 0.02), episode=1)          # 一部が隠れた瞬間の外れ値
+    assert out == pytest.approx((0.10, 0.10, 0.02), abs=1e-3)
+    assert m.update(None, episode=1) == pytest.approx((0.10, 0.10, 0.02), abs=1e-3)  # 検出なしは直前の値
+    assert m.update(None, episode=2) is None                # エピソードが変わったら捨てる
