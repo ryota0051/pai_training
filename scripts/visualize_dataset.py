@@ -70,11 +70,13 @@ from typing import Iterator
 
 import numpy as np
 import rerun as rr
+import rerun.blueprint as rrb
 import torch
 import torch.utils.data
 import tqdm
 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+from pai_training.visualization import entity_paths, feature_names
 
 
 class EpisodeSampler(torch.utils.data.Sampler):
@@ -144,6 +146,16 @@ def visualize_dataset(
 
     logging.info("Logging to Rerun")
 
+    series = {key: entity_paths(key, feature_names(dataset.features, key))
+              for key in ("action", "observation.state", "observation.environment_state")
+              if key in dataset.features}
+    # 関節ごと・物体位置のグラフを並べたレイアウト
+    joint_names = feature_names(dataset.features, "action") if "action" in dataset.features else []
+    views = [rrb.TimeSeriesView(origin=f"joints/{n}", name=n) for n in joint_names]
+    if "observation.environment_state" in dataset.features:
+        views.append(rrb.TimeSeriesView(origin="object", name="object position"))
+    rr.send_blueprint(rrb.Grid(*views))
+
     for batch in tqdm.tqdm(dataloader, total=len(dataloader)):
         # iterate over the batch
         for i in range(len(batch["index"])):
@@ -155,15 +167,10 @@ def visualize_dataset(
                 # TODO(rcadene): add `.compress()`? is it lossless?
                 rr.log(key, rr.Image(to_hwc_uint8_numpy(batch[key][i])))
 
-            # display each dimension of action space (e.g. actuators command)
-            if "action" in batch:
-                for dim_idx, val in enumerate(batch["action"][i]):
-                    rr.log(f"action/{dim_idx}", rr.Scalar(val.item()))
-
-            # display each dimension of observed state space (e.g. agent position in joint space)
-            if "observation.state" in batch:
-                for dim_idx, val in enumerate(batch["observation.state"][i]):
-                    rr.log(f"state/{dim_idx}", rr.Scalar(val.item()))
+            # 関節ごとに指令（action）と観測（state）を重ね、物体位置（environment_state）も表示する
+            for key, paths in series.items():
+                for path, val in zip(paths, batch[key][i]):
+                    rr.log(path, rr.Scalar(val.item()))
 
             if "next.done" in batch:
                 rr.log("next.done", rr.Scalar(batch["next.done"][i].item()))
