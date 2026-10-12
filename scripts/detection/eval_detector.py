@@ -35,8 +35,13 @@ def main():
     parser.add_argument('--dataset-dir', default=None)
     parser.add_argument('--label', default='dr_test')
     parser.add_argument('--examples', type=int, default=0, help='検出結果を描いた画像を先頭から何枚並べて保存するか')
+    parser.add_argument('--only-val', default=None,
+                        help='学習時の train_info.json を指定すると、その検証用画像（val_ids）だけで評価する（しきい値の決定用）')
+    parser.add_argument('--score-threshold', type=float, default=None, help='設定の score_threshold を上書き')
     args = parser.parse_args()
     cfg = yaml.safe_load(Path(args.config).read_text())
+    if args.score_threshold is not None:
+        cfg['score_threshold'] = args.score_threshold
     sys.path.insert(0, cfg['pai_task_env_path'])
     from pai_task_env.domain_randomization import bbox_center_to_position
     from pai_task_env.vision import CameraModel, mask_centroid, red_mask
@@ -57,7 +62,11 @@ def main():
     coco = json.loads((d / 'annotations.json').read_text())
     meta = {m['image_id']: m for m in map(json.loads, open(d / 'meta.jsonl'))}
     rows, examples = [], []
-    for im in coco['images']:
+    images = coco['images']
+    if args.only_val:
+        val_ids = set(json.loads(Path(args.only_val).read_text())['val_ids'])
+        images = [im for im in images if im['id'] in val_ids]
+    for im in images:
         m = meta[im['id']]
         obj = np.asarray(m['object'][:2])
         img = Image.open(d / 'images' / im['file_name']).convert('RGB')

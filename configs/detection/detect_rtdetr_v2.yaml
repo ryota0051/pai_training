@@ -5,7 +5,7 @@ camera_config: "/home/ubuntu/final_task/ros2_ws/src/pai_task_env/config/camera.y
 image_topic: /task/camera/image
 output_topic: /task/object_pose_est
 status_topic: /task/detector_status
-score_threshold: 0.5
+score_threshold: 0.15         # 2 クラスにしたらスコアが全体に低い。検証用 120 枚で決定（0.5 では物体 16%、0.15 で 99%。誤検出は 0.2 と同数）（実験12）
 object_size: 0.04
 object_center_z: 0.02       # 出力する物体中心の高さ（学習データの物体位置と揃える）
 device: "cuda"
