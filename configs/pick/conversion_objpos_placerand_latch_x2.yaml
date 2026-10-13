@@ -1,0 +1,33 @@
+# 把持・配置タスク (objpos_place_latch_x2): 改良 A' の観測で、置き場所ランダムのスクリプトデモを倍に増やしたもの（約 680 本, 実験12）
+bag_dir:                        # 複数指定で順に連結
+  - "/home/ubuntu/dataset/rosbags/pick_place_placerand"
+  - "/home/ubuntu/dataset/rosbags/pick_place_placerand2"   # 追加分（seed 1300 / 1301）
+output_dir: "/home/ubuntu/dataset/lerobot_dataset/crane_plus_pick_objpos_placerand_latch_x2"
+config: "configs/pick/features_objpos_place.py"
+target_freq: 20
+pad_to_longest: true
+
+# 学習・推論で共通の関節順（名前で並べ替える）。最後がグリッパ
+joint_order:
+  - crane_plus_joint1
+  - crane_plus_joint2
+  - crane_plus_joint3
+  - crane_plus_joint4
+  - crane_plus_joint_hand
+
+topics:
+  joint_states: /joint_states
+  arm_command: /crane_plus_arm_controller/joint_trajectory
+  gripper_command: /crane_plus_gripper_controller/joint_trajectory
+  object_pose: /task/object_pose
+  place_pose: /task/place_pose
+
+observation:
+  state: [joints]
+  environment_state: [object_xyz_latched, place_xy]
+
+# グリッパが閉じた（≥ close）・開いた（≤ open）とみなす関節角 [rad]。閉じている間は閉じる直前の物体位置で固定
+# （運搬中は物体がグリッパに隠れて検出器で見えないので、学習時の観測を実行時に合わせる）
+object_latch:
+  close: 0.12
+  open: 0.0
