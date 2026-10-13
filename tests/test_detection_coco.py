@@ -25,3 +25,24 @@ def test_split_ids_is_deterministic_and_disjoint():
     b_tr, b_va = split_ids(range(100), val_ratio=0.2, seed=0)
     assert a_tr == b_tr and a_va == b_va
     assert len(a_va) == 20 and not set(a_tr) & set(a_va)
+
+
+def test_best_per_class_picks_highest_score_of_each_label():
+    from pai_training.detection.coco import best_per_class
+    scores = [0.6, 0.9, 0.7, 0.55]
+    labels = [0, 1, 0, 1]
+    boxes = [[0, 0, 1, 1], [1, 1, 2, 2], [2, 2, 3, 3], [3, 3, 4, 4]]
+    best = best_per_class(scores, labels, boxes)
+    assert best == {0: ([2, 2, 3, 3], 0.7), 1: ([1, 1, 2, 2], 0.9)}
+    assert best_per_class([], [], []) == {}
+
+
+def test_recent_median_rejects_single_outlier_and_resets():
+    from pai_training.detection.coco import RecentMedian
+    m = RecentMedian(window=5)
+    for v in [(0.10, 0.10, 0.02), (0.101, 0.10, 0.02), (0.10, 0.099, 0.02)]:
+        m.update(v, episode=1)
+    out = m.update((0.09, 0.13, 0.02), episode=1)          # 一部が隠れた瞬間の外れ値
+    assert out == pytest.approx((0.10, 0.10, 0.02), abs=1e-3)
+    assert m.update(None, episode=1) == pytest.approx((0.10, 0.10, 0.02), abs=1e-3)  # 検出なしは直前の値
+    assert m.update(None, episode=2) is None                # エピソードが変わったら捨てる

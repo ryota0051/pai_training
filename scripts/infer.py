@@ -8,7 +8,7 @@ Usage:
     pixi run infer --config configs/pick/infer_objpos.yaml [--model-path <ckpt>]
 
 I/F:
-    sub  /joint_states, （物体位置を使う場合）/task/object_pose
+    sub  /joint_states, （物体位置を使う場合）/task/object_pose, （置き場所を使う場合）/task/place_pose
     pub  /crane_plus_arm_controller/joint_trajectory, /crane_plus_gripper_controller/joint_trajectory
     pub  /policy/status (std_msgs/String, JSON: enabled, latency_ms, predicted, step)
     srv  /policy/enable (std_srvs/SetBool), /policy/reset (std_srvs/Trigger)
@@ -33,7 +33,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from lerobot.common.policies.act.modeling_act import ACTPolicy
 from pai_training.conversion import ConversionSpec
 from pai_training.fk_loader import make_fk
-from pai_training.inference_utils import ObservationCorruptor, TemporalEnsembler, compose_observation
+from pai_training.inference_utils import ObjectLatch, ObservationCorruptor, TemporalEnsembler, compose_observation
 
 DEFAULTS = {
     'device': 'cpu',
@@ -90,6 +90,11 @@ class InferenceNode(Node):
         self.ensembler = TemporalEnsembler(coeff, self.policy.config.chunk_size) if coeff is not None else None
         oc = cfg['object_corruption']
         self.corruptor = None
+        # グリッパが閉じている間は物体位置を固定する（学習データと同じ規則, 実験12 の改良 A'）
+        self.latch = None
+        if 'object_xyz_latched' in self.spec.state_sources + self.spec.env_state_sources:
+            self.latch = ObjectLatch(self.spec.object_latch['close'], self.spec.object_latch['open'])
+            self.get_logger().info(f'object latch while gripper closed: {self.spec.object_latch}')
         if oc['noise_std'] > 0 or oc['delay_steps'] > 0 or oc.get('bias_std', 0) > 0:
             self.corruptor = ObservationCorruptor(oc['noise_std'], oc['delay_steps'], oc.get('seed'),
                                                   bias_std=oc.get('bias_std', 0.0))
@@ -102,11 +107,14 @@ class InferenceNode(Node):
         self.create_subscription(JointState, topics['joint_states'], self.on_joint_state, 10)
         if self.spec.needs_object:
             self.create_subscription(PoseStamped, topics['object_pose'], self.on_object, 10)
+        if self.spec.needs_place:
+            self.create_subscription(PoseStamped, topics['place_pose'], self.on_place, 10)
         self.create_service(SetBool, '/policy/enable', self.on_enable)
         self.create_service(Trigger, '/policy/reset', self.on_reset)
 
         self.joints = {}
         self.object_xyz = None
+        self.place_xy = None
         self.observed_object = None
         self.step = 0
         self.last_latency_ms = None
@@ -134,12 +142,18 @@ class InferenceNode(Node):
         p = msg.pose.position
         self.object_xyz = (p.x, p.y, p.z)
 
+    def on_place(self, msg):
+        p = msg.pose.position
+        self.place_xy = (p.x, p.y)
+
     def reset_policy(self):
         self.policy.reset()
         if self.ensembler is not None:
             self.ensembler.reset()
         if self.corruptor is not None:
             self.corruptor.reset()
+        if self.latch is not None:
+            self.latch.reset()
         self.step = 0
 
     def on_enable(self, req, res):
@@ -166,8 +180,10 @@ class InferenceNode(Node):
         object_xyz = self.object_xyz
         if object_xyz is not None and self.corruptor is not None and self.enabled:
             object_xyz = tuple(self.corruptor.apply(object_xyz))
+        if self.latch is not None and self.spec.gripper_joint in self.joints:
+            object_xyz = self.latch.update(object_xyz, self.joints[self.spec.gripper_joint])
         self.observed_object = object_xyz
-        obs = compose_observation(self.spec, self.joints, object_xyz, fk=self.fk)
+        obs = compose_observation(self.spec, self.joints, object_xyz, fk=self.fk, place_xy=self.place_xy)
         if obs is None or not self.enabled:
             self.publish_status()
             return
@@ -188,7 +204,8 @@ class InferenceNode(Node):
     def publish_status(self):
         self.status_pub.publish(String(data=json.dumps({
             'enabled': self.enabled,
-            'ready': compose_observation(self.spec, self.joints, self.object_xyz, fk=self.fk) is not None,
+            'ready': compose_observation(self.spec, self.joints, self.object_xyz, fk=self.fk,
+                                         place_xy=self.place_xy) is not None,
             'step': self.step,
             'latency_ms': None if self.last_latency_ms is None else round(self.last_latency_ms, 2),
             'predicted': None if self.last_pred is None else [round(float(v), 4) for v in self.last_pred],
@@ -214,6 +231,8 @@ class InferenceNode(Node):
             for axis, v, o in zip('xyz', self.object_xyz, self.observed_object):
                 rr.log(f'object/{axis}/true', rr.Scalars(v))
                 rr.log(f'object/{axis}/observed', rr.Scalars(float(o)))
+        if self.place_xy is not None:
+            rr.log('place/xy', rr.Points3D([(*self.place_xy, 0.0)], radii=0.035))
         rr.log('latency_ms', rr.Scalars(self.last_latency_ms))
 
 

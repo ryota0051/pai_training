@@ -2,7 +2,7 @@
 
 メッセージは (timestamp_ns, names, values) のタプル列で受け取る。
 - joint_states / arm_command / gripper_command: names は関節名、values は位置
-- object_pose: names は None、values は [x, y, z]
+- object_pose / place_pose: names は None、values は [x, y, z]
 
 upstream の rosbag2lerobot.py は /joint_states をメッセージ内の並び順のまま使っていたが、
 ここでは joint_order に従って **名前で並べ替える**（指令側の関節順が異なっても整合する）。
@@ -26,9 +26,15 @@ DEFAULT_TOPICS = {
     'arm_command': '/crane_plus_arm_controller/joint_trajectory',
     'gripper_command': '/crane_plus_gripper_controller/joint_trajectory',
     'object_pose': None,
+    'place_pose': None,
 }
 # object_minus_ee: 物体位置 − 手先位置（順運動学）。人が目で見ている「手先と物体のずれ」を明示的に与える（実験11）
-SOURCES = ('joints', 'object_xyz', 'object_minus_ee')
+# place_xy: 置き場所の中心 [x, y]。置き場所もエピソードごとに変える場合に使う（実験12）
+# object_xyz_latched: グリッパが閉じている間は、閉じる直前の物体位置で固定する（実験12 の改良 A'）。
+#   運搬中は物体がグリッパに隠れてカメラで見えないため、実行時（検出器）と学習時（真値）の観測をそろえる
+SOURCES = ('joints', 'object_xyz', 'object_minus_ee', 'place_xy', 'object_xyz_latched')
+# グリッパが「閉じた」「開いた」とみなす関節角 [rad]（把持アシストと同じ。間の値では状態を変えない）
+DEFAULT_OBJECT_LATCH = {'close': 0.12, 'open': 0.0}
 # 順運動学: arm_joints の順の関節角 → 手先（把持中心）の位置 [x, y, z]
 ForwardKinematics = Callable[[Sequence[float]], Sequence[float]]
 
@@ -41,6 +47,7 @@ class ConversionSpec:
     env_state_sources: List[str] = field(default_factory=lambda: ['joints'])
     topics: Dict[str, Optional[str]] = field(default_factory=lambda: dict(DEFAULT_TOPICS))
     pad_to_longest: bool = True
+    object_latch: Dict[str, float] = field(default_factory=lambda: dict(DEFAULT_OBJECT_LATCH))
 
     def __post_init__(self):
         for s in list(self.state_sources) + list(self.env_state_sources):
@@ -58,7 +65,11 @@ class ConversionSpec:
     @property
     def needs_object(self) -> bool:
         used = self.state_sources + self.env_state_sources
-        return 'object_xyz' in used or 'object_minus_ee' in used
+        return 'object_xyz' in used or 'object_minus_ee' in used or 'object_xyz_latched' in used
+
+    @property
+    def needs_place(self) -> bool:
+        return 'place_xy' in self.state_sources + self.env_state_sources
 
     @property
     def needs_fk(self) -> bool:
@@ -76,6 +87,7 @@ class ConversionSpec:
             env_state_sources=list(obs.get('environment_state', ['joints'])),
             topics=topics,
             pad_to_longest=bool(cfg.get('pad_to_longest', True)),
+            object_latch={**DEFAULT_OBJECT_LATCH, **(cfg.get('object_latch') or {})},
         )
 
 
@@ -91,6 +103,24 @@ def sample_and_hold(times: np.ndarray, values: np.ndarray, target_times: np.ndar
         values = values.reshape(-1, 1)
     idx = np.searchsorted(np.asarray(times), np.asarray(target_times), side='right') - 1
     return values[np.clip(idx, 0, len(values) - 1)]
+
+
+def latch_while_closed(values: np.ndarray, gripper: np.ndarray, close: float, open_: float) -> np.ndarray:
+    """グリッパが閉じている間（関節角 ≥ close になってから ≤ open_ になるまで）は、閉じる直前の値で固定する.
+
+    閉じた状態で始まった場合は最初の値で固定する。推論側の ObjectLatch と同じ規則。
+    """
+    out = np.array(values, dtype=float, copy=True)
+    closed, held = False, None
+    for i, g in enumerate(gripper):
+        if not closed and g >= close:
+            closed = True
+            held = out[i - 1].copy() if i > 0 else out[i].copy()
+        elif closed and g <= open_:
+            closed = False
+        if closed:
+            out[i] = held
+    return out
 
 
 def time_window(time_arrays: Sequence[np.ndarray]) -> Tuple[int, int]:
@@ -111,16 +141,21 @@ def build_episode_arrays(spec: ConversionSpec,
                          arm_commands: Sequence[Message],
                          gripper_commands: Sequence[Message],
                          object_poses: Optional[Sequence[Message]] = None,
-                         fk: Optional[ForwardKinematics] = None) -> Dict[str, np.ndarray]:
+                         fk: Optional[ForwardKinematics] = None,
+                         place_poses: Optional[Sequence[Message]] = None) -> Dict[str, np.ndarray]:
     """1 エピソード分の observation.state / observation.environment_state / action を作る."""
     if spec.needs_object and not object_poses:
         raise ValueError('object_xyz is requested but no object pose messages were given')
     if spec.needs_fk and fk is None:
         raise ValueError('object_minus_ee is requested but no forward kinematics (fk) was given')
+    if spec.needs_place and not place_poses:
+        raise ValueError('place_xy is requested but no place pose messages were given')
 
     streams = [joint_states, arm_commands, gripper_commands]
     if spec.needs_object:
         streams.append(object_poses)
+    if spec.needs_place:
+        streams.append(place_poses)
     start, end = time_window([_times(s) for s in streams])
     n = num_frames(start, end, spec.target_freq)
     if n <= 0:
@@ -138,6 +173,12 @@ def build_episode_arrays(spec: ConversionSpec,
     if spec.needs_fk:
         ee = np.array([fk(q[:-1]) for q in sources['joints']])
         sources['object_minus_ee'] = sources['object_xyz'] - ee
+    if 'object_xyz_latched' in spec.state_sources + spec.env_state_sources:
+        sources['object_xyz_latched'] = latch_while_closed(
+            sources['object_xyz'], sources['joints'][:, -1], spec.object_latch['close'], spec.object_latch['open'])
+    if spec.needs_place:
+        place = np.array([list(v)[:2] for _, _, v in place_poses])
+        sources['place_xy'] = sample_and_hold(_times(place_poses), place, target)
 
     action = np.hstack([sample_and_hold(_times(arm_commands), arm, target),
                         sample_and_hold(_times(gripper_commands), grip, target)])

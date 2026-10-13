@@ -11,24 +11,59 @@ from pai_training.conversion import ConversionSpec, ForwardKinematics
 
 def compose_observation(spec: ConversionSpec, joints_by_name: Mapping[str, float],
                         object_xyz: Optional[Sequence[float]],
-                        fk: Optional[ForwardKinematics] = None) -> Optional[Dict[str, np.ndarray]]:
+                        fk: Optional[ForwardKinematics] = None,
+                        place_xy: Optional[Sequence[float]] = None) -> Optional[Dict[str, np.ndarray]]:
     """変換時と同じ規則（joint_order・observation sources）で観測ベクトルを作る. 揃っていなければ None."""
     if any(n not in joints_by_name for n in spec.joint_order):
         return None
     if spec.needs_object and object_xyz is None:
         return None
+    if spec.needs_place and place_xy is None:
+        return None
     sources = {'joints': np.array([joints_by_name[n] for n in spec.joint_order], dtype=np.float32)}
     if object_xyz is not None:
         sources['object_xyz'] = np.asarray(object_xyz, dtype=np.float32)[:3]
+        # 固定（ObjectLatch）は呼び出し側で済ませた値を受け取る
+        sources['object_xyz_latched'] = sources['object_xyz']
     if spec.needs_fk:
         if fk is None:
             raise ValueError('object_minus_ee is requested but no forward kinematics (fk) was given')
         ee = np.asarray(fk(sources['joints'][:-1]), dtype=np.float32)
         sources['object_minus_ee'] = sources['object_xyz'] - ee
+    if place_xy is not None:
+        sources['place_xy'] = np.asarray(place_xy, dtype=np.float32)[:2]
     return {
         'observation.state': np.concatenate([sources[s] for s in spec.state_sources]),
         'observation.environment_state': np.concatenate([sources[s] for s in spec.env_state_sources]),
     }
+
+
+class ObjectLatch:
+    """グリッパが閉じている間は物体位置を固定する（変換側の latch_while_closed と同じ規則）.
+
+    開いている間: 入力された物体位置をそのまま返し、覚えておく（None なら直前の値）
+    閉じている間（関節角 ≥ close になってから ≤ open_ になるまで）: 閉じる直前の値を返し続ける
+    """
+
+    def __init__(self, close: float, open_: float):
+        self.close = close
+        self.open = open_
+        self.reset()
+
+    def reset(self) -> None:
+        self.closed = False
+        self.last: Optional[tuple] = None
+
+    def update(self, object_xyz: Optional[Sequence[float]], gripper: float) -> Optional[tuple]:
+        if not self.closed and gripper >= self.close:
+            self.closed = True
+            if self.last is None and object_xyz is not None:
+                self.last = tuple(object_xyz)
+        elif self.closed and gripper <= self.open:
+            self.closed = False
+        if not self.closed and object_xyz is not None:
+            self.last = tuple(object_xyz)
+        return self.last
 
 
 class TemporalEnsembler:

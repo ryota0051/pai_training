@@ -1,0 +1,16 @@
+# 2 クラスの検出器（物体・置き場所）の評価（実験12）。学習に使っていない画像で位置誤差を測る
+model_dir: "/home/ubuntu/checkpoints/detector/rtdetr_dr_v2"
+dataset_dir: "/home/ubuntu/dataset/detector/dr_v2_test"
+pai_task_env_path: "/home/ubuntu/final_task/ros2_ws/src/pai_task_env"     # カメラモデル・逆算（ROS 非依存）を流用
+camera_config: "/home/ubuntu/final_task/ros2_ws/src/pai_task_env/config/camera.yaml"
+score_threshold: 0.15         # 2 クラスにしたらスコアが全体に低い。検証用 120 枚で決定（0.5 では物体 16%、0.15 で 99%。誤検出は 0.2 と同数）（実験12）
+object_size: 0.04          # 円柱の直径・高さ [m]
+object_center_z: 0.02
+device: "cuda"
+output_dir: "/home/ubuntu/dataset/detector/eval"
+object_label: 0
+place:                      # 置き場所（厚さ 1mm の円板）
+  label: 1
+  radius: 0.035
+  height: 0.001
+  center_z: 0.0005

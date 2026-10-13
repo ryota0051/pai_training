@@ -116,3 +116,30 @@ def test_compose_observation_object_minus_ee():
     fk = lambda q: [q[0] + 0.1, q[1], 0.0]                        # 手先 = (0.1, 1.0, 0.0)
     obs = compose_observation(spec, joints, (0.3, 0.2, 0.1), fk=fk)
     assert obs['observation.environment_state'].tolist() == pytest.approx([0.3, 0.2, 0.1, 0.2, -0.8, 0.1])
+
+
+def test_compose_observation_with_place():
+    spec = ConversionSpec(joint_order=ORDER, state_sources=['joints'], env_state_sources=['object_xyz', 'place_xy'])
+    joints = {n: 0.0 for n in ORDER}
+    obs = compose_observation(spec, joints, (0.1, 0.2, 0.02), place_xy=(0.05, -0.1))
+    assert obs['observation.environment_state'].tolist() == pytest.approx([0.1, 0.2, 0.02, 0.05, -0.1])
+    # 置き場所が未受信なら観測は揃っていない
+    assert compose_observation(spec, joints, (0.1, 0.2, 0.02)) is None
+
+
+def test_object_latch_holds_while_gripper_closed():
+    from pai_training.inference_utils import ObjectLatch
+    latch = ObjectLatch(close=0.12, open_=0.0)
+    assert latch.update((0.1, 0.0, 0.02), -0.5) == (0.1, 0.0, 0.02)
+    assert latch.update((0.2, 0.0, 0.02), 0.3) == (0.1, 0.0, 0.02)     # 閉じた → 直前の値
+    assert latch.update((0.3, 0.0, 0.02), 0.05) == (0.1, 0.0, 0.02)    # しきい値の間は閉のまま
+    assert latch.update((0.4, 0.0, 0.02), -0.2) == (0.4, 0.0, 0.02)    # 開いた → 追跡に戻る
+    latch.reset()
+    assert latch.update((0.5, 0.0, 0.02), 0.3) == (0.5, 0.0, 0.02)     # 閉じた状態で始まったら最初の値
+    assert latch.update(None, 0.3) == (0.5, 0.0, 0.02)
+
+
+def test_compose_observation_with_latched_source():
+    spec = ConversionSpec(joint_order=ORDER, state_sources=['joints'], env_state_sources=['object_xyz_latched'])
+    obs = compose_observation(spec, {n: 0.0 for n in ORDER}, (0.1, 0.2, 0.02))
+    assert obs['observation.environment_state'].tolist() == pytest.approx([0.1, 0.2, 0.02])
