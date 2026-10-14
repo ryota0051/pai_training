@@ -33,7 +33,8 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from lerobot.common.policies.act.modeling_act import ACTPolicy
 from pai_training.conversion import ConversionSpec
 from pai_training.fk_loader import make_fk
-from pai_training.inference_utils import ObjectLatch, ObservationCorruptor, TemporalEnsembler, compose_observation
+from pai_training.inference_utils import (ObjectLatch, ObservationCorruptor, TemporalEnsembler, compose_observation,
+                                          resolve_topics)
 
 DEFAULTS = {
     'device': 'cpu',
@@ -100,7 +101,7 @@ class InferenceNode(Node):
                                                   bias_std=oc.get('bias_std', 0.0))
             self.get_logger().info(f'object observation corruption: {oc}')
 
-        topics = {**DEFAULTS['topics'], **self.spec.topics, **cfg['topics']}
+        topics = resolve_topics(DEFAULTS['topics'], self.spec.topics, cfg['topics'])
         self.arm_pub = self.create_publisher(JointTrajectory, topics['arm_command'], 10)
         self.gripper_pub = self.create_publisher(JointTrajectory, topics['gripper_command'], 10)
         self.status_pub = self.create_publisher(String, '/policy/status', 10)

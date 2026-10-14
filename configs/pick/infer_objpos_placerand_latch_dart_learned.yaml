@@ -1,0 +1,27 @@
+# 把持・配置タスク (objpos_place) を 2 クラスの検出器（物体・置き場所）の推定値で動かす推論設定（実験12, detect_rtdetr_v2.yaml と組で使う）。物体位置はグリッパが閉じている間は固定（改良 A'）。外乱（DART）入りのデモで学習したモデル（実験13）
+model_path: "/home/ubuntu/checkpoints/train/crane_plus_pick_objpos_placerand_latch_dart_act"
+conversion_config: "configs/pick/conversion_objpos_placerand_latch_dart.yaml"   # 観測の組み立て規則を学習データと共有
+device: "cuda"
+rate: 20.0
+trajectory_time: 0.1
+start_enabled: false            # ブラウザ UI / 評価スクリプトから /policy/enable で開始
+
+# 物体・置き場所の位置を真値ではなく検出器の推定値に差し替える
+topics:
+  object_pose: /task/object_pose_est
+  place_pose: /task/place_pose_est
+
+temporal_ensemble_coeff: 0.01   # ACT の temporal ensembling（実験3で 55%→100%）。null で無効
+
+# 物体位置の観測劣化（頑健性評価用。--object-noise / --object-delay で上書き可）
+object_corruption:
+  noise_std: 0.0                # 毎ステップ独立なノイズ [m]
+  bias_std: 0.0                 # 試行ごとに一定のオフセット [m]（キャリブレーション誤差）
+  delay_steps: 0                # 制御ステップ（20Hz なので 1 = 50ms）
+  seed: null
+
+rerun:
+  enabled: true
+  web_port: 9877                # rosbridge が 9090 を使うため演習の 9090 から変更
+  grpc_port: 9876
+  app_id: "crane_plus_pick_objpos_place_learned"

@@ -143,3 +143,29 @@ def test_compose_observation_with_latched_source():
     spec = ConversionSpec(joint_order=ORDER, state_sources=['joints'], env_state_sources=['object_xyz_latched'])
     obs = compose_observation(spec, {n: 0.0 for n in ORDER}, (0.1, 0.2, 0.02))
     assert obs['observation.environment_state'].tolist() == pytest.approx([0.1, 0.2, 0.02])
+
+
+# ---- 推論ノードのトピック ----
+from pai_training.inference_utils import resolve_topics  # noqa: E402
+
+DEFAULT_CMD = {'arm_command': '/arm_ctrl', 'gripper_command': '/grip_ctrl'}
+
+
+def test_resolve_topics_takes_observation_topics_from_conversion():
+    conv = {'joint_states': '/joint_states', 'object_pose': '/task/object_pose', 'place_pose': '/task/place_pose'}
+    t = resolve_topics(DEFAULT_CMD, conv, {})
+    assert t['object_pose'] == '/task/object_pose' and t['place_pose'] == '/task/place_pose'
+    assert t['arm_command'] == '/arm_ctrl'
+
+
+def test_resolve_topics_ignores_command_topics_of_conversion():
+    """変換設定の指令トピックは「ラベルの出どころ」（DART では外乱なしの指令）なので、推論の出力先にしない（実験13）."""
+    conv = {'arm_command': '/teleop/expert_arm_command', 'gripper_command': '/x', 'object_pose': '/o'}
+    t = resolve_topics(DEFAULT_CMD, conv, {})
+    assert t['arm_command'] == '/arm_ctrl' and t['gripper_command'] == '/grip_ctrl'
+
+
+def test_resolve_topics_inference_config_wins():
+    conv = {'object_pose': '/task/object_pose'}
+    t = resolve_topics(DEFAULT_CMD, conv, {'object_pose': '/task/object_pose_est', 'arm_command': '/other'})
+    assert t['object_pose'] == '/task/object_pose_est' and t['arm_command'] == '/other'

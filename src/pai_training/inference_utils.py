@@ -124,3 +124,18 @@ class ObservationCorruptor:
         if self.noise_std > 0:
             out[self.axes] += self.rng.normal(0.0, self.noise_std, size=len(self.axes))
         return out
+
+
+# 指令（推論の出力先）のトピック。変換設定のものは「ラベルの出どころ」なので推論では使わない
+COMMAND_TOPIC_KEYS = ('arm_command', 'gripper_command')
+
+
+def resolve_topics(default_topics: Mapping[str, str], conversion_topics: Mapping[str, Optional[str]],
+                   inference_topics: Mapping[str, str]) -> Dict[str, Optional[str]]:
+    """推論ノードのトピック. 観測は変換設定から引き継ぎ、推論設定で上書きする.
+
+    指令（arm_command / gripper_command）は変換設定から引き継がない。DART のデモでは変換設定の arm_command が
+    外乱なしの指令（/teleop/expert_arm_command）を指し、推論の出力先にすると腕が動かないため（実験13）。
+    """
+    observed = {k: v for k, v in conversion_topics.items() if k not in COMMAND_TOPIC_KEYS}
+    return {**default_topics, **observed, **inference_topics}
