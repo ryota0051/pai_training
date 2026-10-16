@@ -169,3 +169,24 @@ def test_resolve_topics_inference_config_wins():
     conv = {'object_pose': '/task/object_pose'}
     t = resolve_topics(DEFAULT_CMD, conv, {'object_pose': '/task/object_pose_est', 'arm_command': '/other'})
     assert t['object_pose'] == '/task/object_pose_est' and t['arm_command'] == '/other'
+
+
+def _image_spec():
+    return ConversionSpec(joint_order=ORDER, state_sources=['joints'], env_state_sources=[],
+                          image_sources=['overhead'], topics={'overhead': '/cam'})
+
+
+def test_compose_observation_with_image_and_no_environment_state():
+    joints = {n: float(i) for i, n in enumerate(ORDER)}
+    img = np.full((2, 3, 3), 255, dtype=np.uint8)
+    obs = compose_observation(_image_spec(), joints, None, images={'overhead': img})
+    assert set(obs) == {'observation.state', 'observation.images.overhead'}
+    assert obs['observation.images.overhead'].shape == (3, 2, 3)
+    assert obs['observation.images.overhead'].dtype == np.float32
+    assert obs['observation.images.overhead'].max() == 1.0
+
+
+def test_compose_observation_requires_image():
+    joints = {n: 0.0 for n in ORDER}
+    assert compose_observation(_image_spec(), joints, None) is None
+    assert compose_observation(_image_spec(), joints, None, images={'other': np.zeros((2, 2, 3), np.uint8)}) is None

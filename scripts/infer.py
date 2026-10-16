@@ -8,7 +8,8 @@ Usage:
     pixi run infer --config configs/pick/infer_objpos.yaml [--model-path <ckpt>]
 
 I/F:
-    sub  /joint_states, （物体位置を使う場合）/task/object_pose, （置き場所を使う場合）/task/place_pose
+    sub  /joint_states, （物体位置を使う場合）/task/object_pose, （置き場所を使う場合）/task/place_pose,
+         （カメラ画像を使う場合）変換設定の topics.<カメラ名>（例: /task/camera/image）
     pub  /crane_plus_arm_controller/joint_trajectory, /crane_plus_gripper_controller/joint_trajectory
     pub  /policy/status (std_msgs/String, JSON: enabled, latency_ms, predicted, step)
     srv  /policy/enable (std_srvs/SetBool), /policy/reset (std_srvs/Trigger)
@@ -25,7 +26,7 @@ import yaml
 from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import String
 from std_srvs.srv import SetBool, Trigger
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
@@ -33,6 +34,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from lerobot.common.policies.act.modeling_act import ACTPolicy
 from pai_training.conversion import ConversionSpec
 from pai_training.fk_loader import make_fk
+from pai_training.images import decode_image
 from pai_training.inference_utils import (ObjectLatch, ObservationCorruptor, TemporalEnsembler, compose_observation,
                                           resolve_topics)
 
@@ -110,12 +112,15 @@ class InferenceNode(Node):
             self.create_subscription(PoseStamped, topics['object_pose'], self.on_object, 10)
         if self.spec.needs_place:
             self.create_subscription(PoseStamped, topics['place_pose'], self.on_place, 10)
+        for cam in self.spec.image_sources:
+            self.create_subscription(Image, topics[cam], lambda msg, cam=cam: self.on_image(cam, msg), 1)
         self.create_service(SetBool, '/policy/enable', self.on_enable)
         self.create_service(Trigger, '/policy/reset', self.on_reset)
 
         self.joints = {}
         self.object_xyz = None
         self.place_xy = None
+        self.images = {}   # カメラ名 → 最新の (H, W, 3) uint8 RGB
         self.observed_object = None
         self.step = 0
         self.last_latency_ms = None
@@ -147,6 +152,9 @@ class InferenceNode(Node):
         p = msg.pose.position
         self.place_xy = (p.x, p.y)
 
+    def on_image(self, cam, msg):
+        self.images[cam] = decode_image(msg.encoding, msg.height, msg.width, msg.step, msg.data)
+
     def reset_policy(self):
         self.policy.reset()
         if self.ensembler is not None:
@@ -173,6 +181,8 @@ class InferenceNode(Node):
     def predict_chunk(self, obs):
         batch = {k: torch.from_numpy(v).unsqueeze(0).to(self.device) for k, v in obs.items()}
         batch = self.policy.normalize_inputs(batch)
+        if self.policy.config.image_features:   # ACTPolicy.select_action と同じくカメラ画像をリストにまとめる
+            batch['observation.images'] = [batch[k] for k in self.policy.config.image_features]
         chunk = self.policy.model(batch)[0]
         chunk = self.policy.unnormalize_outputs({'action': chunk})['action']
         return chunk[0].cpu().numpy()  # (chunk_size, action_dim)
@@ -184,7 +194,8 @@ class InferenceNode(Node):
         if self.latch is not None and self.spec.gripper_joint in self.joints:
             object_xyz = self.latch.update(object_xyz, self.joints[self.spec.gripper_joint])
         self.observed_object = object_xyz
-        obs = compose_observation(self.spec, self.joints, object_xyz, fk=self.fk, place_xy=self.place_xy)
+        obs = compose_observation(self.spec, self.joints, object_xyz, fk=self.fk, place_xy=self.place_xy,
+                                  images=self.images)
         if obs is None or not self.enabled:
             self.publish_status()
             return
@@ -206,7 +217,7 @@ class InferenceNode(Node):
         self.status_pub.publish(String(data=json.dumps({
             'enabled': self.enabled,
             'ready': compose_observation(self.spec, self.joints, self.object_xyz, fk=self.fk,
-                                         place_xy=self.place_xy) is not None,
+                                         place_xy=self.place_xy, images=self.images) is not None,
             'step': self.step,
             'latency_ms': None if self.last_latency_ms is None else round(self.last_latency_ms, 2),
             'predicted': None if self.last_pred is None else [round(float(v), 4) for v in self.last_pred],
@@ -234,6 +245,8 @@ class InferenceNode(Node):
                 rr.log(f'object/{axis}/observed', rr.Scalars(float(o)))
         if self.place_xy is not None:
             rr.log('place/xy', rr.Points3D([(*self.place_xy, 0.0)], radii=0.035))
+        for cam, img in self.images.items():
+            rr.log(f'camera/{cam}', rr.Image(img))
         rr.log('latency_ms', rr.Scalars(self.last_latency_ms))
 
 

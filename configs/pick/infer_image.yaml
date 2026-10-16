@@ -1,0 +1,14 @@
+# 把持・配置タスク (image) 関節角 + 俯瞰カメラ画像で学習したモデルの推論設定（A 案）。物体位置・置き場所は購読しない
+model_path: "/home/ubuntu/checkpoints/train/crane_plus_pick_image_act"
+conversion_config: "configs/pick/conversion_image.yaml"   # 観測の組み立て規則（画像トピック）を学習データと共有
+device: "cuda"
+rate: 20.0
+trajectory_time: 0.1
+start_enabled: false            # ブラウザ UI / 評価スクリプトから /policy/enable で開始
+temporal_ensemble_coeff: 0.01   # A' と同じ
+
+rerun:
+  enabled: true
+  web_port: 9877
+  grpc_port: 9876
+  app_id: "crane_plus_pick_image"

@@ -102,8 +102,12 @@ def main():
     dataset = LeRobotDataset(repo_id, root=dataset_root, episodes=episodes,
                              delta_timestamps=cfg["delta_timestamps"])
     print(f"dataset: {dataset.num_episodes} episodes, {len(dataset)} frames")
+    obs_keys = [k for k in cfg["delta_timestamps"] if k.startswith("observation.")]
 
-    optimizer = torch.optim.AdamW(policy.parameters(), lr=cfg["learning_rate"],
+    # カメラ画像を使う場合は、画像の backbone（ImageNet 学習済み ResNet）だけ学習率を下げる
+    # （ACT 論文・LeRobot と同じ。act.optimizer_lr_backbone で変更可、既定 1e-5）
+    params = policy.get_optim_params() if policy.config.image_features else policy.parameters()
+    optimizer = torch.optim.AdamW(params, lr=cfg["learning_rate"],
                                   weight_decay=cfg.get("weight_decay", 0.0))
     dataloader = torch.utils.data.DataLoader(
         dataset,
@@ -124,8 +128,11 @@ def main():
             batch = {k: (v.to(device, non_blocking=True) if isinstance(v, torch.Tensor) else v)
                      for k, v in batch.items()}
             # Remove the sequence_length dimension to adapt to the ACT model implementation
-            batch["observation.state"] = batch["observation.state"][:, -1, :]  # (B, D)
-            batch["observation.environment_state"] = batch["observation.environment_state"][:, -1, :]  # (B, D)
+            # 観測は最新の 1 時刻だけを使う。状態は (B, 1, D) で来るが、動画の画像は 1 時刻だと
+            # LeRobotDataset が時刻の次元を落として (B, C, H, W) で返すので、時刻の次元が残っているものだけ絞る
+            for key in obs_keys:
+                if batch[key].ndim == len(input_features[key].shape) + 2:
+                    batch[key] = batch[key][:, -1]
             loss, loss_dict = policy.forward(batch)
             loss.backward()
             optimizer.step()

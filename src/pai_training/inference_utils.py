@@ -6,19 +6,27 @@ from typing import Dict, Mapping, Optional, Sequence
 
 import numpy as np
 
-from pai_training.conversion import ConversionSpec, ForwardKinematics
+from pai_training.conversion import IMAGE_FEATURE_PREFIX, ConversionSpec, ForwardKinematics
+from pai_training.images import to_chw_float
 
 
 def compose_observation(spec: ConversionSpec, joints_by_name: Mapping[str, float],
                         object_xyz: Optional[Sequence[float]],
                         fk: Optional[ForwardKinematics] = None,
-                        place_xy: Optional[Sequence[float]] = None) -> Optional[Dict[str, np.ndarray]]:
-    """変換時と同じ規則（joint_order・observation sources）で観測ベクトルを作る. 揃っていなければ None."""
+                        place_xy: Optional[Sequence[float]] = None,
+                        images: Optional[Mapping[str, np.ndarray]] = None) -> Optional[Dict[str, np.ndarray]]:
+    """変換時と同じ規則（joint_order・observation sources）で観測ベクトルを作る. 揃っていなければ None.
+
+    images: カメラ名 → (H, W, 3) uint8 の RGB。observation.images.<カメラ名> に (3, H, W) float32 [0, 1] で入れる
+    """
+    images = images or {}
     if any(n not in joints_by_name for n in spec.joint_order):
         return None
     if spec.needs_object and object_xyz is None:
         return None
     if spec.needs_place and place_xy is None:
+        return None
+    if any(cam not in images for cam in spec.image_sources):
         return None
     sources = {'joints': np.array([joints_by_name[n] for n in spec.joint_order], dtype=np.float32)}
     if object_xyz is not None:
@@ -32,10 +40,12 @@ def compose_observation(spec: ConversionSpec, joints_by_name: Mapping[str, float
         sources['object_minus_ee'] = sources['object_xyz'] - ee
     if place_xy is not None:
         sources['place_xy'] = np.asarray(place_xy, dtype=np.float32)[:2]
-    return {
-        'observation.state': np.concatenate([sources[s] for s in spec.state_sources]),
-        'observation.environment_state': np.concatenate([sources[s] for s in spec.env_state_sources]),
-    }
+    obs = {'observation.state': np.concatenate([sources[s] for s in spec.state_sources])}
+    if spec.has_env_state:
+        obs['observation.environment_state'] = np.concatenate([sources[s] for s in spec.env_state_sources])
+    for cam in spec.image_sources:
+        obs[IMAGE_FEATURE_PREFIX + cam] = to_chw_float(images[cam])
+    return obs
 
 
 class ObjectLatch:

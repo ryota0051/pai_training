@@ -3,6 +3,8 @@
 メッセージは (timestamp_ns, names, values) のタプル列で受け取る。
 - joint_states / arm_command / gripper_command: names は関節名、values は位置
 - object_pose / place_pose: names は None、values は [x, y, z]
+カメラ画像は大きいので、ここでは時刻だけを受け取り、各フレームで使う画像の番号（image_index.<名前>）を返す。
+画像そのものの読み出しは呼び出し側（scripts/rosbag2lerobot.py）がエピソードごとに行う。
 
 upstream の rosbag2lerobot.py は /joint_states をメッセージ内の並び順のまま使っていたが、
 ここでは joint_order に従って **名前で並べ替える**（指令側の関節順が異なっても整合する）。
@@ -33,6 +35,9 @@ DEFAULT_TOPICS = {
 # object_xyz_latched: グリッパが閉じている間は、閉じる直前の物体位置で固定する（実験12 の改良 A'）。
 #   運搬中は物体がグリッパに隠れてカメラで見えないため、実行時（検出器）と学習時（真値）の観測をそろえる
 SOURCES = ('joints', 'object_xyz', 'object_minus_ee', 'place_xy', 'object_xyz_latched')
+# カメラ画像を観測に使う場合の、フレームごとの画像番号のキー（後ろにカメラ名）と LeRobot の特徴量名
+IMAGE_INDEX_PREFIX = 'image_index.'
+IMAGE_FEATURE_PREFIX = 'observation.images.'
 # グリッパが「閉じた」「開いた」とみなす関節角 [rad]（把持アシストと同じ。間の値では状態を変えない）
 DEFAULT_OBJECT_LATCH = {'close': 0.12, 'open': 0.0}
 # 順運動学: arm_joints の順の関節角 → 手先（把持中心）の位置 [x, y, z]
@@ -48,11 +53,16 @@ class ConversionSpec:
     topics: Dict[str, Optional[str]] = field(default_factory=lambda: dict(DEFAULT_TOPICS))
     pad_to_longest: bool = True
     object_latch: Dict[str, float] = field(default_factory=lambda: dict(DEFAULT_OBJECT_LATCH))
+    # カメラ名のリスト。各カメラの画像トピックは topics[カメラ名]。特徴量は observation.images.<カメラ名>
+    image_sources: List[str] = field(default_factory=list)
 
     def __post_init__(self):
         for s in list(self.state_sources) + list(self.env_state_sources):
             if s not in SOURCES:
                 raise ValueError(f'unknown observation source: {s} (choose from {SOURCES})')
+        for cam in self.image_sources:
+            if not self.topics.get(cam):
+                raise ValueError(f'image source "{cam}" has no topic (set topics.{cam})')
 
     @property
     def arm_joints(self) -> List[str]:
@@ -72,6 +82,11 @@ class ConversionSpec:
         return 'place_xy' in self.state_sources + self.env_state_sources
 
     @property
+    def has_env_state(self) -> bool:
+        """observation.environment_state を作るか（画像だけで物体を見る場合は空にする）."""
+        return bool(self.env_state_sources)
+
+    @property
     def needs_fk(self) -> bool:
         return 'object_minus_ee' in self.state_sources + self.env_state_sources
 
@@ -88,6 +103,7 @@ class ConversionSpec:
             topics=topics,
             pad_to_longest=bool(cfg.get('pad_to_longest', True)),
             object_latch={**DEFAULT_OBJECT_LATCH, **(cfg.get('object_latch') or {})},
+            image_sources=list(obs.get('images') or []),
         )
 
 
@@ -142,21 +158,32 @@ def build_episode_arrays(spec: ConversionSpec,
                          gripper_commands: Sequence[Message],
                          object_poses: Optional[Sequence[Message]] = None,
                          fk: Optional[ForwardKinematics] = None,
-                         place_poses: Optional[Sequence[Message]] = None) -> Dict[str, np.ndarray]:
-    """1 エピソード分の observation.state / observation.environment_state / action を作る."""
+                         place_poses: Optional[Sequence[Message]] = None,
+                         image_times: Optional[Mapping[str, Sequence[int]]] = None) -> Dict[str, np.ndarray]:
+    """1 エピソード分の observation.state / observation.environment_state / action を作る.
+
+    image_sources がある場合は image_times（カメラ名 → 各画像の時刻 [ns]）を受け取り、
+    image_index.<カメラ名>（各フレームで使う画像の番号。直前の画像）も返す。
+    """
+    image_times = image_times or {}
     if spec.needs_object and not object_poses:
         raise ValueError('object_xyz is requested but no object pose messages were given')
     if spec.needs_fk and fk is None:
         raise ValueError('object_minus_ee is requested but no forward kinematics (fk) was given')
     if spec.needs_place and not place_poses:
         raise ValueError('place_xy is requested but no place pose messages were given')
+    for cam in spec.image_sources:
+        if not image_times.get(cam):
+            raise ValueError(f'image source "{cam}" is requested but no image timestamps were given')
 
     streams = [joint_states, arm_commands, gripper_commands]
     if spec.needs_object:
         streams.append(object_poses)
     if spec.needs_place:
         streams.append(place_poses)
-    start, end = time_window([_times(s) for s in streams])
+    stream_times = [_times(s) for s in streams]
+    stream_times += [np.asarray(image_times[cam], dtype=np.int64) for cam in spec.image_sources]
+    start, end = time_window(stream_times)
     n = num_frames(start, end, spec.target_freq)
     if n <= 0:
         raise ValueError('episode is too short')
@@ -182,9 +209,14 @@ def build_episode_arrays(spec: ConversionSpec,
 
     action = np.hstack([sample_and_hold(_times(arm_commands), arm, target),
                         sample_and_hold(_times(gripper_commands), grip, target)])
-    return {
+    out = {
         'observation.state': np.hstack([sources[s] for s in spec.state_sources]).astype(np.float32),
-        'observation.environment_state':
-            np.hstack([sources[s] for s in spec.env_state_sources]).astype(np.float32),
         'action': action.astype(np.float32),
     }
+    if spec.has_env_state:
+        out['observation.environment_state'] =             np.hstack([sources[s] for s in spec.env_state_sources]).astype(np.float32)
+    for cam in spec.image_sources:
+        times = np.asarray(image_times[cam], dtype=np.int64)
+        idx = np.searchsorted(times, target, side='right') - 1
+        out[IMAGE_INDEX_PREFIX + cam] = np.clip(idx, 0, len(times) - 1).astype(np.int64)
+    return out

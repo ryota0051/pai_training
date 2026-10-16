@@ -7,6 +7,10 @@ rosbag の読み出しと LeRobotDataset への書き込みのみを行う。
 Usage:
     pixi run convert                                   # configs/conversion_config.yaml（演習のお辞儀）
     pixi run convert --config configs/pick/conversion_objpos.yaml [--overwrite]
+    pixi run convert --config configs/pick/conversion_image.yaml [--overwrite]   # カメラ画像を観測に使う
+
+カメラ画像（observation.images）を使う場合、画像は大きいので 1 回目の読み出しでは時刻だけを集め、
+書き込み時にエピソードごとに読み直す（全エピソードの画像をメモリに載せない）。
 """
 import argparse
 import importlib.util
@@ -19,7 +23,8 @@ from rosbags.rosbag2 import Reader
 from rosbags.serde import deserialize_cdr
 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
-from pai_training.conversion import ConversionSpec, build_episode_arrays
+from pai_training.conversion import IMAGE_FEATURE_PREFIX, IMAGE_INDEX_PREFIX, ConversionSpec, build_episode_arrays
+from pai_training.images import decode_image
 from pai_training.fk_loader import make_fk
 from pai_training.episode_discovery import find_episode_dirs
 
@@ -32,7 +37,7 @@ def load_config_py(config_path):
 
 
 def read_messages(episode_dir: Path, spec: ConversionSpec):
-    """必要なトピックを (timestamp_ns, names, values) のリストで返す."""
+    """必要なトピックを (timestamp_ns, names, values) のリストで返す. カメラ画像は時刻 [ns] のリストのみ."""
     topics = {k: v for k, v in spec.topics.items() if v}
     out = {k: [] for k in topics}
     by_topic = {v: k for k, v in topics.items()}
@@ -40,6 +45,9 @@ def read_messages(episode_dir: Path, spec: ConversionSpec):
         conns = [c for c in reader.connections if c.topic in by_topic]
         for conn, ts, raw in reader.messages(connections=conns):
             key = by_topic[conn.topic]
+            if key in spec.image_sources:   # 画像は展開しない（時刻だけ）
+                out[key].append(ts)
+                continue
             msg = deserialize_cdr(raw, conn.msgtype)
             if key == 'joint_states':
                 out[key].append((ts, list(msg.name), list(msg.position)))
@@ -49,6 +57,18 @@ def read_messages(episode_dir: Path, spec: ConversionSpec):
             elif key in ('object_pose', 'place_pose'):
                 p = msg.pose.position
                 out[key].append((ts, None, [p.x, p.y, p.z]))
+    return out
+
+
+def read_images(episode_dir: Path, spec: ConversionSpec):
+    """カメラ名 → (H, W, 3) uint8 の RGB 画像のリスト（read_messages の時刻と同じ順）."""
+    by_topic = {spec.topics[cam]: cam for cam in spec.image_sources}
+    out = {cam: [] for cam in spec.image_sources}
+    with Reader(episode_dir) as reader:
+        conns = [c for c in reader.connections if c.topic in by_topic]
+        for conn, _ts, raw in reader.messages(connections=conns):
+            msg = deserialize_cdr(raw, conn.msgtype)
+            out[by_topic[conn.topic]].append(decode_image(msg.encoding, msg.height, msg.width, msg.step, msg.data))
     return out
 
 
@@ -94,7 +114,8 @@ def main():
             msgs = read_messages(ep_dir, spec)
             arrays = build_episode_arrays(spec, msgs['joint_states'], msgs['arm_command'],
                                           msgs['gripper_command'], msgs.get('object_pose'), fk=fk,
-                                          place_poses=msgs.get('place_pose'))
+                                          place_poses=msgs.get('place_pose'),
+                                          image_times={cam: msgs[cam] for cam in spec.image_sources})
             episodes.append((ep_dir, arrays))
             print(f'  {ep_dir.name}: {len(arrays["action"])} frames')
         except Exception as e:  # 1 エピソードの不備で全体を止めない
@@ -104,14 +125,19 @@ def main():
     for idx, (ep_dir, arrays) in enumerate(episodes):
         n = len(arrays['action'])
         total = max_frames if spec.pad_to_longest else n
+        images = read_images(ep_dir, spec) if spec.image_sources else {}
         for i in range(total):
             j = min(i, n - 1)  # 演習と同様、短いエピソードは最終フレームを保持して延長
-            dataset.add_frame({
+            frame = {
                 'observation.state': torch.from_numpy(arrays['observation.state'][j]),
-                'observation.environment_state': torch.from_numpy(arrays['observation.environment_state'][j]),
                 'action': torch.from_numpy(arrays['action'][j]),
                 'task': task_name,
-            })
+            }
+            if spec.has_env_state:
+                frame['observation.environment_state'] = torch.from_numpy(arrays['observation.environment_state'][j])
+            for cam in spec.image_sources:
+                frame[IMAGE_FEATURE_PREFIX + cam] = images[cam][arrays[IMAGE_INDEX_PREFIX + cam][j]]
+            dataset.add_frame(frame)
         dataset.save_episode()
         print(f'saved episode {idx} ({ep_dir.name})')
     print(f'Dataset saved to: {dataset.root}')
