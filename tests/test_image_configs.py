@@ -40,3 +40,17 @@ def test_image_configs_are_consistent():
     assert train['repo_id'] == feats.repo_id
     assert infer['conversion_config'] == 'configs/pick/conversion_image.yaml'
     assert infer['model_path'] == train['output_directory']
+
+
+def test_color_augmented_configs_differ_only_in_augmentation_and_outputs():
+    base = _yaml('configs/pick/train_image.yaml')
+    color = _yaml('configs/pick/train_image_color.yaml')
+    infer = _yaml('configs/pick/infer_image_color.yaml')
+    aug = color.pop('image_transforms')
+    assert aug['enable'] is True
+    # 色の拡張だけ（位置を動かす拡張は入れない）
+    assert {t['type'] for t in aug['tfs'].values()} <= {'ColorJitter', 'SharpnessJitter'}
+    assert color.pop('output_directory') != base.pop('output_directory')
+    assert color == base
+    assert infer['model_path'] == _yaml('configs/pick/train_image_color.yaml')['output_directory']
+    assert infer['conversion_config'] == 'configs/pick/conversion_image.yaml'

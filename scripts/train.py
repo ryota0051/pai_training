@@ -28,6 +28,7 @@ Usage:
     seed: int
     episodes: [0, 1, ...]  学習に使うエピソード（null なら全て）
     act: {...}             ACTConfig への追加引数（dim_model, n_encoder_layers, kl_weight など）
+    image_transforms: {...} 学習時の画像の拡張（pai_training.augmentation。省略時は拡張なし）
 学習時間などは <output_directory>/train_info.json に保存する。
 """
 
@@ -45,6 +46,7 @@ from lerobot.common.datasets.utils import dataset_to_policy_features
 from lerobot.common.policies.act.configuration_act import ACTConfig
 from lerobot.common.policies.act.modeling_act import ACTPolicy
 from lerobot.configs.types import FeatureType
+from pai_training.augmentation import make_image_transforms
 
 
 def load_config_py(config_path: Path):
@@ -99,8 +101,10 @@ def main():
     policy.train()
     policy.to(device)
 
+    image_transforms = make_image_transforms(cfg.get("image_transforms"))
+    print(f"image_transforms: {image_transforms}")
     dataset = LeRobotDataset(repo_id, root=dataset_root, episodes=episodes,
-                             delta_timestamps=cfg["delta_timestamps"])
+                             delta_timestamps=cfg["delta_timestamps"], image_transforms=image_transforms)
     print(f"dataset: {dataset.num_episodes} episodes, {len(dataset)} frames")
     obs_keys = [k for k in cfg["delta_timestamps"] if k.startswith("observation.")]
 
