@@ -185,3 +185,51 @@ def test_spec_reads_object_latch():
     spec = ConversionSpec.from_dict({'observation': {'environment_state': ['object_xyz_latched', 'place_xy']},
                                      'object_latch': {'close': 0.1, 'open': -0.1}})
     assert spec.object_latch == {'close': 0.1, 'open': -0.1}
+
+
+# ---- カメラ画像（A 案: 画像 + 関節角, 物体位置なし） ----
+def test_spec_reads_image_sources_and_empty_environment_state():
+    spec = ConversionSpec.from_dict({'observation': {'state': ['joints'], 'environment_state': [],
+                                                     'images': ['overhead']},
+                                     'topics': {'overhead': '/task/camera/image'}})
+    assert spec.image_sources == ['overhead']
+    assert spec.topics['overhead'] == '/task/camera/image'
+    assert not spec.has_env_state
+    assert not spec.needs_object
+
+
+def test_spec_image_source_requires_topic():
+    with pytest.raises(ValueError):
+        ConversionSpec.from_dict({'observation': {'images': ['overhead']}})
+
+
+def test_spec_default_has_no_images():
+    spec = ConversionSpec.from_dict({})
+    assert spec.image_sources == []
+    assert spec.has_env_state
+
+
+def test_build_episode_arrays_image_index_samples_latest_past_image():
+    js, arm, grip, _ = _msgs()
+    ns = 1_000_000_000
+    # 画像は 10Hz（0.1s ごと）、0.05s から 1.95s まで
+    image_times = [ns // 20 + t * ns // 10 for t in range(0, 20)]
+    spec = ConversionSpec(joint_order=ORDER, target_freq=20, state_sources=['joints'], env_state_sources=[],
+                          image_sources=['overhead'], topics={'overhead': '/cam'})
+    arrays = build_episode_arrays(spec, js, arm, grip, image_times={'overhead': image_times})
+    assert 'observation.environment_state' not in arrays
+    idx = arrays['image_index.overhead']
+    assert idx.dtype == np.int64
+    # 時間窓は最初の画像（0.05s）から始まる。20Hz の各フレームで直前の画像を使う
+    n = len(arrays['action'])
+    assert len(idx) == n == len(arrays['observation.state'])
+    assert idx[:4].tolist() == [0, 0, 1, 1]
+    assert idx.max() <= len(image_times) - 1
+
+
+def test_build_episode_arrays_requires_image_times():
+    js, arm, grip, _ = _msgs()
+    spec = ConversionSpec(joint_order=ORDER, target_freq=20, env_state_sources=[],
+                          image_sources=['overhead'], topics={'overhead': '/cam'})
+    with pytest.raises(ValueError):
+        build_episode_arrays(spec, js, arm, grip)

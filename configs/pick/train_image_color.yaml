@@ -1,0 +1,44 @@
+# 把持・配置タスク (image_color) 関節角 + 俯瞰カメラ画像（A 案）に、学習時の色の拡張を加えた設定。それ以外は train_image.yaml と同じ
+dataset_root: "/home/ubuntu/dataset/lerobot_dataset/crane_plus_pick_image"
+repo_id: "crane_plus_pick_image"
+output_directory: "/home/ubuntu/checkpoints/train/crane_plus_pick_image_color_act"
+config_path: "configs/pick/features_image.py"
+
+device: "cuda"
+seed: 0
+wandb_mode: "disabled"          # wandb を使う場合は online（要 pixi run wandb login）
+wandb_project: "pai_crane_pick"
+episodes: null                  # 学習に使うエピソード（null で全て）
+
+training_steps: 80000
+log_freq: 200
+num_workers: 8                  # 画像（動画）のデコードがあるので低次元のモデルより多め
+batch_size: 32
+learning_rate: 0.0001
+weight_decay: 0.0001
+chunk_size: 16
+n_action_steps: 1               # 推論時は毎ステップ再計画（演習と同じ）
+
+# データセットは 20fps。行動チャンクは現在 (0.0s) から 16 ステップ先 (0.75s) まで
+delta_timestamps:
+  observation.images.overhead: [0.0]
+  observation.state: [0.0]
+  action: [0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75]
+
+# ACTConfig への追加引数。画像の backbone は ImageNet 学習済み ResNet18（LeRobot の既定）、学習率は 1e-5
+act: {}
+
+# 学習時の色の拡張（pai_training.augmentation → LeRobot の ImageTransforms）。位置を動かす拡張は入れない
+# （固定カメラで画像上の位置から物体・置き場所の位置を読むため。1px ≈ 1.5mm）。
+# 範囲は評価の見た目ランダム化（物体・置き場所の彩度 0.4〜1.0・明るさ 0.45〜1.0、机の色味、照明 0.5〜1.1 倍）に合わせる。
+# 色相は物体（赤）と置き場所（青）の区別を保つよう狭くする
+image_transforms:
+  enable: true
+  max_num_transforms: 3           # 1 フレームにかける拡張の最大数（下の 5 つから選ぶ）
+  random_order: false
+  tfs:
+    brightness: {type: ColorJitter, kwargs: {brightness: [0.5, 1.2]}}
+    contrast: {type: ColorJitter, kwargs: {contrast: [0.7, 1.3]}}
+    saturation: {type: ColorJitter, kwargs: {saturation: [0.4, 1.3]}}
+    hue: {type: ColorJitter, kwargs: {hue: [-0.03, 0.03]}}
+    sharpness: {type: SharpnessJitter, kwargs: {sharpness: [0.5, 1.5]}}
